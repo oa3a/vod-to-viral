@@ -43,13 +43,8 @@ const Results = () => {
 
   const handleDownloadClip = async (clip: any) => {
     console.log('Download clicked for clip:', clip.id);
-    console.log('FFmpeg loaded:', isFFmpegLoaded);
+    console.log('FFmpeg loaded (ignored for test):', isFFmpegLoaded);
     console.log('Already downloading:', downloadingClips.has(clip.id));
-
-    if (!isFFmpegLoaded) {
-      toast.error('Video processor not ready yet, please wait...');
-      return;
-    }
 
     if (downloadingClips.has(clip.id)) {
       toast.info('This clip is already being processed');
@@ -61,11 +56,10 @@ const Results = () => {
     try {
       toast.loading(`Processing clip ${clip.id}...`, { id: `clip-${clip.id}` });
 
-      // TEST MODE: Use local test file instead of Twitch VOD
+      // TEST MODE: Use local test file instead of Twitch VOD / FFmpeg
       const testFileUrl = '/mnt/data/d4b5f121-4b65-4aa1-aaed-0bdf3fcdea6f.png';
       console.log('Fetching test file:', testFileUrl);
 
-      // Simple download test without FFmpeg processing
       const response = await fetch(testFileUrl, { mode: 'cors' });
       console.log('Fetch response status:', response.status, response.statusText);
       
@@ -209,9 +203,9 @@ const Results = () => {
                 </p>
                 <Button
                   onClick={() => handleDownloadClip(clip)}
-                  className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
+                  className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90 download-btn"
                   size="sm"
-                  disabled={!isFFmpegLoaded || downloadingClips.has(clip.id)}
+                  disabled={downloadingClips.has(clip.id)}
                 >
                   <Download className="w-4 h-4" />
                   {downloadingClips.has(clip.id) ? 'Processing...' : 'Download Clip'}
