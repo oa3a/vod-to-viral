@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Download, ArrowLeft, Star, Clock, TrendingUp } from "lucide-react";
@@ -54,44 +55,71 @@ const Results = () => {
     },
   ];
 
-  const handleDownload = async (clipId: number, title: string) => {
-    try {
-      toast.success(`Preparing download: ${title}`);
-      
-      // Create a mock video blob (in production, this would be the actual processed clip)
-      // Using a sample video URL as placeholder for MVP
-      const response = await fetch('https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4');
-      const blob = await response.blob();
-      
-      // Create download URL
-      const url = URL.createObjectURL(blob);
-      
-      // Create temporary anchor element and trigger download
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${title.replace(/\s+/g, '_')}_clip_${clipId}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      
-      // Cleanup
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      toast.success(`Downloaded: ${title}`);
-    } catch (error) {
-      toast.error('Download failed. Please try again.');
+  const [downloadUrls, setDownloadUrls] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    let createdUrls: string[] = [];
+
+    const prepareDownloadUrls = async () => {
+      try {
+        // In a real app, each clip would have its own video source (base64/ArrayBuffer).
+        // For the MVP, we use a local demo mp4 file and create Blob URLs from it.
+        const response = await fetch("/videos/demo-clip.mp4");
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        createdUrls.push(url);
+
+        const urlsMap: Record<number, string> = {};
+        for (const clip of clips) {
+          urlsMap[clip.id] = url;
+        }
+
+        setDownloadUrls(urlsMap);
+      } catch (error) {
+        console.error("Failed to prepare clip download URLs", error);
+        toast.error("Failed to prepare clip downloads. Please refresh and try again.");
+      }
+    };
+
+    prepareDownloadUrls();
+
+    return () => {
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
+
+  const downloadClip = (clipId: number, title: string) => {
+    const url = downloadUrls[clipId];
+
+    if (!url) {
+      toast.error("Clip is still preparing. Please try again in a moment.");
+      return;
     }
+
+    const safeTitle = title.replace(/[^a-z0-9]+/gi, "_").toLowerCase();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${safeTitle}_clip_${clipId}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    toast.success(`Downloading: ${title}`);
   };
 
-  const handleDownloadAll = async () => {
-    toast.success("Preparing all clips for download...");
-    
-    // Download each clip sequentially
-    for (const clip of clips) {
-      await handleDownload(clip.id, clip.title);
-      // Small delay between downloads to prevent browser blocking
-      await new Promise(resolve => setTimeout(resolve, 500));
+  const handleDownloadAll = () => {
+    if (Object.keys(downloadUrls).length === 0) {
+      toast.error("Clips are still preparing. Please try again in a moment.");
+      return;
     }
+
+    toast.success("Starting downloads for all clips...");
+
+    clips.forEach((clip, index) => {
+      setTimeout(() => {
+        downloadClip(clip.id, clip.title);
+      }, index * 500);
+    });
   };
 
   if (!vodUrl) {
@@ -176,12 +204,22 @@ const Results = () => {
                   {clip.title}
                 </h3>
                 <Button
-                  onClick={() => handleDownload(clip.id, clip.title)}
+                  asChild
                   className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
                   size="sm"
                 >
-                  <Download className="w-4 h-4" />
-                  Download Clip
+                  <a
+                    href={downloadUrls[clip.id]}
+                    download={`${clip.title.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}_clip_${clip.id}.mp4`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      downloadClip(clip.id, clip.title);
+                    }}
+                    className="flex items-center justify-center gap-2 w-full"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Clip</span>
+                  </a>
                 </Button>
               </div>
             </div>
