@@ -172,8 +172,13 @@ const Results = () => {
       if (useServerProcessing && !isFFmpegLoaded) {
         console.log('Using server-side processing fallback via process-clip function');
 
+        // Convert relative paths to absolute URLs for edge function
+        const absoluteVodUrl = vodSourceUrl.startsWith('http') 
+          ? vodSourceUrl 
+          : `${window.location.origin}${vodSourceUrl}`;
+
         const { data, error } = await supabase.functions.invoke('process-clip', {
-          body: { vodUrl: vodSourceUrl, startTime: startSeconds, endTime: endSeconds },
+          body: { vodUrl: absoluteVodUrl, startTime: startSeconds, endTime: endSeconds },
         });
 
         if (error) {
