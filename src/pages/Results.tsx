@@ -25,16 +25,21 @@ const Results = () => {
       if (isFFmpegLoaded) return;
 
       try {
+        console.log('Starting FFmpeg load...');
+        toast.loading('Initializing video processor...', { id: 'ffmpeg-load' });
+        
         const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
         await ffmpeg.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
         });
+        
         setIsFFmpegLoaded(true);
         console.log('FFmpeg loaded successfully');
+        toast.success('Video processor ready!', { id: 'ffmpeg-load' });
       } catch (error) {
         console.error('Failed to load FFmpeg:', error);
-        toast.error('Failed to initialize video processor');
+        toast.error('Failed to initialize video processor. Please refresh the page.', { id: 'ffmpeg-load' });
       }
     };
 
