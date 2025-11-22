@@ -42,9 +42,10 @@ const Results = () => {
   }, [isFFmpegLoaded]);
 
   const handleDownloadClip = async (clip: any) => {
-    console.log('Download clicked for clip:', clip.id);
-    console.log('FFmpeg loaded (ignored for test):', isFFmpegLoaded);
-    console.log('Already downloading:', downloadingClips.has(clip.id));
+    if (!isFFmpegLoaded) {
+      toast.error('Video processor not ready yet, please wait...');
+      return;
+    }
 
     if (downloadingClips.has(clip.id)) {
       toast.info('This clip is already being processed');
@@ -54,38 +55,76 @@ const Results = () => {
     setDownloadingClips(prev => new Set(prev).add(clip.id));
     
     try {
-      toast.loading(`Processing clip ${clip.id}...`, { id: `clip-${clip.id}` });
+      toast.loading(`Downloading VOD...`, { id: `clip-${clip.id}` });
 
-      // TEST MODE: Use local test file instead of Twitch VOD / FFmpeg
-      const testFileUrl = '/mnt/data/d4b5f121-4b65-4aa1-aaed-0bdf3fcdea6f.png';
-      console.log('Fetching test file:', testFileUrl);
+      // Get the HLS stream URL from edge function
+      const { data: streamData, error: streamError } = await supabase.functions.invoke('get-vod-stream', {
+        body: { vodId: vodData.vodId }
+      });
 
-      const response = await fetch(testFileUrl, { mode: 'cors' });
-      console.log('Fetch response status:', response.status, response.statusText);
-      
-      if (!response.ok) {
-        throw new Error(`Fetch failed: ${response.status} ${response.statusText}`);
+      if (streamError || !streamData?.streamUrl) {
+        throw new Error('Failed to get VOD stream URL');
       }
 
-      const blob = await response.blob();
-      console.log('Blob created, size:', blob.size, 'type:', blob.type);
+      const vodStreamUrl = streamData.streamUrl;
+      console.log('VOD Stream URL:', vodStreamUrl);
+
+      // Fetch the VOD content
+      toast.loading(`Processing with FFmpeg...`, { id: `clip-${clip.id}` });
       
+      const ffmpeg = ffmpegRef.current;
+      const vodResponse = await fetch(vodStreamUrl);
+      
+      if (!vodResponse.ok) {
+        throw new Error(`Failed to fetch VOD: ${vodResponse.status}`);
+      }
+
+      // Check MIME type
+      const contentType = vodResponse.headers.get('content-type') || '';
+      console.log('VOD Content-Type:', contentType);
+      
+      if (!contentType.includes('video') && !contentType.includes('application/vnd.apple.mpegurl')) {
+        throw new Error(`Invalid content type: ${contentType}. Expected video or HLS stream.`);
+      }
+
+      const vodData_buffer = await vodResponse.arrayBuffer();
+      await ffmpeg.writeFile('input.mp4', new Uint8Array(vodData_buffer));
+
+      // Calculate time parameters
+      const startSeconds = Math.floor(clip.startTime / 1000);
+      const duration = clip.duration;
+
+      // Cut the clip using FFmpeg
+      await ffmpeg.exec([
+        '-ss', startSeconds.toString(),
+        '-i', 'input.mp4',
+        '-t', duration.toString(),
+        '-c', 'copy',
+        '-avoid_negative_ts', 'make_zero',
+        'output.mp4'
+      ]);
+
+      // Read the output file and create MP4 blob
+      const data = await ffmpeg.readFile('output.mp4') as Uint8Array;
+      const mp4Blob = new Blob([data.buffer as ArrayBuffer], { type: 'video/mp4' });
+
+      // Clean up FFmpeg files
+      await ffmpeg.deleteFile('input.mp4');
+      await ffmpeg.deleteFile('output.mp4');
+
       // Trigger download
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(mp4Blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `test-clip-${clip.id}.png`;
+      a.download = `clip-${clip.id}-${clip.title.replace(/[^a-z0-9]/gi, '_')}.mp4`;
       document.body.appendChild(a);
-      console.log('Download link created, triggering click...');
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      console.log('Download triggered successfully');
       toast.success(`Clip ${clip.id} downloaded!`, { id: `clip-${clip.id}` });
     } catch (error) {
       console.error('Download error:', error);
-      console.error('Error stack:', error instanceof Error ? error.stack : 'No stack');
       toast.error(`Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`, { id: `clip-${clip.id}` });
     } finally {
       setDownloadingClips(prev => {
@@ -205,10 +244,10 @@ const Results = () => {
                   onClick={() => handleDownloadClip(clip)}
                   className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90 download-btn"
                   size="sm"
-                  disabled={downloadingClips.has(clip.id)}
+                  disabled={!isFFmpegLoaded || downloadingClips.has(clip.id)}
                 >
                   <Download className="w-4 h-4" />
-                  {downloadingClips.has(clip.id) ? 'Processing...' : 'Download Clip'}
+                  {downloadingClips.has(clip.id) ? 'Processing...' : !isFFmpegLoaded ? 'Loading processor...' : 'Download Clip'}
                 </Button>
               </div>
             </div>
