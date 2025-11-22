@@ -1,8 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Download, ArrowLeft, Star, Clock, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { supabase } from "@/integrations/supabase/client";
 
 const Results = () => {
   const location = useLocation();
@@ -10,21 +13,114 @@ const Results = () => {
   const vodUrl = location.state?.vodUrl;
   const vodData = location.state?.vodData;
 
-  // Use real clips from Twitch VOD data
   const clips = vodData?.clips || [];
+  const ffmpegRef = useRef(new FFmpeg());
+  const [isFFmpegLoaded, setIsFFmpegLoaded] = useState(false);
+  const [downloadingClips, setDownloadingClips] = useState<Set<number>>(new Set());
 
-  const handleDownloadClip = (clip: any) => {
-    toast.info(
-      `Download functionality coming soon! This will download the clip from ${clip.formattedTime} (${clip.duration}s).`,
-      { duration: 4000 }
-    );
+  useEffect(() => {
+    const loadFFmpeg = async () => {
+      const ffmpeg = ffmpegRef.current;
+      
+      if (isFFmpegLoaded) return;
+
+      try {
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+        await ffmpeg.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+        setIsFFmpegLoaded(true);
+        console.log('FFmpeg loaded successfully');
+      } catch (error) {
+        console.error('Failed to load FFmpeg:', error);
+        toast.error('Failed to initialize video processor');
+      }
+    };
+
+    loadFFmpeg();
+  }, [isFFmpegLoaded]);
+
+  const handleDownloadClip = async (clip: any) => {
+    if (!isFFmpegLoaded) {
+      toast.error('Video processor not ready yet, please wait...');
+      return;
+    }
+
+    if (downloadingClips.has(clip.id)) {
+      toast.info('This clip is already being processed');
+      return;
+    }
+
+    setDownloadingClips(prev => new Set(prev).add(clip.id));
+    
+    try {
+      toast.loading(`Processing clip ${clip.id}...`, { id: `clip-${clip.id}` });
+
+      // Get VOD stream URL
+      const { data: streamData, error: streamError } = await supabase.functions.invoke('get-vod-stream', {
+        body: { vodId: vodData.vodId }
+      });
+
+      if (streamError || !streamData?.streamUrl) {
+        throw new Error('Failed to get VOD stream URL');
+      }
+
+      const ffmpeg = ffmpegRef.current;
+      
+      // Fetch the m3u8 file
+      const inputData = await fetchFile(streamData.streamUrl);
+      await ffmpeg.writeFile('input.m3u8', inputData);
+
+      // Cut the clip using FFmpeg
+      await ffmpeg.exec([
+        '-ss', clip.startTime.toString(),
+        '-i', 'input.m3u8',
+        '-t', clip.duration.toString(),
+        '-c', 'copy',
+        '-movflags', 'faststart',
+        'output.mp4'
+      ]);
+
+      // Read the output file
+      const fileData = await ffmpeg.readFile('output.mp4');
+      const data = new Uint8Array(fileData as Uint8Array);
+      const blob = new Blob([data], { type: 'video/mp4' });
+      
+      // Trigger download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `clip-${clip.id}-${clip.formattedTime.replace(/[:\s]/g, '-')}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success(`Clip ${clip.id} downloaded!`, { id: `clip-${clip.id}` });
+    } catch (error) {
+      console.error('Download error:', error);
+      toast.error(`Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`, { id: `clip-${clip.id}` });
+    } finally {
+      setDownloadingClips(prev => {
+        const next = new Set(prev);
+        next.delete(clip.id);
+        return next;
+      });
+    }
   };
 
-  const handleDownloadAll = () => {
-    toast.info(
-      'Bulk download coming soon! In production, this will process and download all clips as .mp4 files.',
-      { duration: 4000 }
-    );
+  const handleDownloadAll = async () => {
+    if (!isFFmpegLoaded) {
+      toast.error('Video processor not ready yet, please wait...');
+      return;
+    }
+
+    toast.info(`Processing ${clips.length} clips... This may take several minutes.`);
+    
+    for (const clip of clips) {
+      await handleDownloadClip(clip);
+    }
   };
 
   if (!vodUrl || !vodData) {
@@ -123,9 +219,10 @@ const Results = () => {
                   onClick={() => handleDownloadClip(clip)}
                   className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
                   size="sm"
+                  disabled={!isFFmpegLoaded || downloadingClips.has(clip.id)}
                 >
                   <Download className="w-4 h-4" />
-                  Download Clip
+                  {downloadingClips.has(clip.id) ? 'Processing...' : 'Download Clip'}
                 </Button>
               </div>
             </div>
