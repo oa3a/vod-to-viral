@@ -79,8 +79,19 @@ const Results = () => {
   }, [isFFmpegLoaded, useServerProcessing]);
 
   const handleDownloadClip = async (clip: any) => {
+    // Check if processor is ready
     if (!isFFmpegLoaded && !useServerProcessing) {
       toast.error('Video processor not ready yet. Please wait...', { id: `clip-${clip.id}` });
+      return;
+    }
+
+    // Check if FFmpeg failed to load and we should use server processing
+    if (ffmpegLoadError && !useServerProcessing) {
+      console.log('FFmpeg failed, switching to server processing');
+      setUseServerProcessing(true);
+      toast.info('Using server-side processing', { id: `clip-${clip.id}` });
+      // Re-trigger the download
+      setTimeout(() => handleDownloadClip(clip), 100);
       return;
     }
 
@@ -194,6 +205,12 @@ const Results = () => {
         return;
       }
 
+      // Ensure FFmpeg is loaded before processing
+      if (!isFFmpegLoaded) {
+        console.error('FFmpeg not loaded, cannot process');
+        throw new Error('Video processor not ready');
+      }
+
       // Fetch the VOD content for client-side ffmpeg processing
       toast.loading(`Processing with FFmpeg...`, { id: `clip-${clip.id}` });
 
@@ -224,7 +241,9 @@ const Results = () => {
       await ffmpeg.writeFile('input.mp4', new Uint8Array(vodData_buffer));
 
       console.log('ffmpeg: run start');
-      await ffmpeg.exec([
+      
+      // Add timeout for ffmpeg.exec to prevent hanging
+      const execPromise = ffmpeg.exec([
         '-ss',
         startSeconds.toString(),
         '-i',
@@ -237,6 +256,12 @@ const Results = () => {
         'make_zero',
         'output.mp4',
       ]);
+
+      const execTimeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('FFmpeg processing timeout')), 60000)
+      );
+
+      await Promise.race([execPromise, execTimeout]);
       console.log('ffmpeg: run complete');
 
       console.log('ffmpeg: readFile output.mp4');
