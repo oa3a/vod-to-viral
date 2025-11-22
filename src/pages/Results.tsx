@@ -62,23 +62,54 @@ const Results = () => {
     try {
       toast.loading(`Downloading VOD...`, { id: `clip-${clip.id}` });
 
-      // Get the HLS stream URL from edge function
-      const { data: streamData, error: streamError } = await supabase.functions.invoke('get-vod-stream', {
-        body: { vodId: vodData.vodId }
-      });
+      let vodSourceUrl: string;
+      
+      // For testing: Use local test file or fallback to sample MP4
+      const testFilePath = '/mnt/data/d4b5f121-4b65-4aa1-aaed-0bdf3fcdea6f.png';
+      
+      // Check if we're in test mode (no vodId or using test data)
+      const isTestMode = !vodData.vodId || vodData.vodId === 'test';
+      
+      if (isTestMode) {
+        console.log('Test mode: checking test file...');
+        // Try to fetch the test file to check if it's a video
+        try {
+          const testResponse = await fetch(testFilePath);
+          const contentType = testResponse.headers.get('content-type') || '';
+          console.log('Test file content-type:', contentType);
+          
+          if (contentType.includes('video')) {
+            vodSourceUrl = testFilePath;
+            console.log('Using test file as video source');
+          } else {
+            console.log('Test file is not a video, using sample MP4 fallback');
+            vodSourceUrl = '/assets/sample_vod.mp4';
+            toast.info('Using sample video for testing', { id: `clip-${clip.id}` });
+          }
+        } catch (error) {
+          console.log('Test file not accessible, using sample MP4 fallback');
+          vodSourceUrl = '/assets/sample_vod.mp4';
+          toast.info('Using sample video for testing', { id: `clip-${clip.id}` });
+        }
+      } else {
+        // Production mode: Get the HLS stream URL from edge function
+        const { data: streamData, error: streamError } = await supabase.functions.invoke('get-vod-stream', {
+          body: { vodId: vodData.vodId }
+        });
 
-      if (streamError || !streamData?.streamUrl) {
-        throw new Error('Failed to get VOD stream URL');
+        if (streamError || !streamData?.streamUrl) {
+          throw new Error('Failed to get VOD stream URL');
+        }
+
+        vodSourceUrl = streamData.streamUrl;
+        console.log('Using Twitch VOD Stream URL:', vodSourceUrl);
       }
-
-      const vodStreamUrl = streamData.streamUrl;
-      console.log('VOD Stream URL:', vodStreamUrl);
 
       // Fetch the VOD content
       toast.loading(`Processing with FFmpeg...`, { id: `clip-${clip.id}` });
       
       const ffmpeg = ffmpegRef.current;
-      const vodResponse = await fetch(vodStreamUrl);
+      const vodResponse = await fetch(vodSourceUrl);
       
       if (!vodResponse.ok) {
         throw new Error(`Failed to fetch VOD: ${vodResponse.status}`);
@@ -88,16 +119,19 @@ const Results = () => {
       const contentType = vodResponse.headers.get('content-type') || '';
       console.log('VOD Content-Type:', contentType);
       
-      if (!contentType.includes('video') && !contentType.includes('application/vnd.apple.mpegurl')) {
-        throw new Error(`Invalid content type: ${contentType}. Expected video or HLS stream.`);
+      if (!contentType.includes('video') && !contentType.includes('application/vnd.apple.mpegurl') && !contentType.includes('application/octet-stream')) {
+        throw new Error(`Input is not a video — upload MP4 or provide a valid VOD. Received: ${contentType}`);
       }
 
       const vodData_buffer = await vodResponse.arrayBuffer();
+      console.log('VOD buffer size:', vodData_buffer.byteLength, 'bytes');
       await ffmpeg.writeFile('input.mp4', new Uint8Array(vodData_buffer));
 
       // Calculate time parameters
       const startSeconds = Math.floor(clip.startTime / 1000);
       const duration = clip.duration;
+
+      console.log(`Cutting clip: start=${startSeconds}s, duration=${duration}s`);
 
       // Cut the clip using FFmpeg
       await ffmpeg.exec([
@@ -112,6 +146,8 @@ const Results = () => {
       // Read the output file and create MP4 blob
       const data = await ffmpeg.readFile('output.mp4') as Uint8Array;
       const mp4Blob = new Blob([data.buffer as ArrayBuffer], { type: 'video/mp4' });
+      
+      console.log('Generated MP4 blob size:', mp4Blob.size, 'bytes');
 
       // Clean up FFmpeg files
       await ffmpeg.deleteFile('input.mp4');
