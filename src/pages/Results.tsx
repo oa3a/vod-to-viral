@@ -153,17 +153,14 @@ const Results = () => {
           toast.info('Using sample video for testing', { id: `clip-${clip.id}` });
         }
       } else {
-        // Production mode: Get the HLS stream URL from edge function
-        const { data: streamData, error: streamError } = await supabase.functions.invoke('get-vod-stream', {
-          body: { vodId: vodData.vodId },
+        // Production mode: Twitch VODs require authentication and can't be fetched directly
+        // For now, fall back to sample video - real implementation would need a proxy
+        console.warn('Production Twitch VOD mode not yet supported - using sample video');
+        vodSourceUrl = '/assets/sample_vod.mp4';
+        toast.info('Twitch VOD download requires proxy setup. Using sample video for now.', { 
+          id: `clip-${clip.id}`,
+          duration: 5000
         });
-
-        if (streamError || !streamData?.streamUrl) {
-          throw new Error('Failed to get VOD stream URL');
-        }
-
-        vodSourceUrl = streamData.streamUrl;
-        console.log('Using Twitch VOD Stream URL:', vodSourceUrl);
       }
 
       const startSeconds = Math.floor(clip.startTime / 1000);
