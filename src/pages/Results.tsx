@@ -42,6 +42,10 @@ const Results = () => {
   }, [isFFmpegLoaded]);
 
   const handleDownloadClip = async (clip: any) => {
+    console.log('Download clicked for clip:', clip.id);
+    console.log('FFmpeg loaded:', isFFmpegLoaded);
+    console.log('Already downloading:', downloadingClips.has(clip.id));
+
     if (!isFFmpegLoaded) {
       toast.error('Video processor not ready yet, please wait...');
       return;
@@ -57,49 +61,37 @@ const Results = () => {
     try {
       toast.loading(`Processing clip ${clip.id}...`, { id: `clip-${clip.id}` });
 
-      // Get VOD stream URL
-      const { data: streamData, error: streamError } = await supabase.functions.invoke('get-vod-stream', {
-        body: { vodId: vodData.vodId }
-      });
+      // TEST MODE: Use local test file instead of Twitch VOD
+      const testFileUrl = '/mnt/data/d4b5f121-4b65-4aa1-aaed-0bdf3fcdea6f.png';
+      console.log('Fetching test file:', testFileUrl);
 
-      if (streamError || !streamData?.streamUrl) {
-        throw new Error('Failed to get VOD stream URL');
+      // Simple download test without FFmpeg processing
+      const response = await fetch(testFileUrl, { mode: 'cors' });
+      console.log('Fetch response status:', response.status, response.statusText);
+      
+      if (!response.ok) {
+        throw new Error(`Fetch failed: ${response.status} ${response.statusText}`);
       }
 
-      const ffmpeg = ffmpegRef.current;
-      
-      // Fetch the m3u8 file
-      const inputData = await fetchFile(streamData.streamUrl);
-      await ffmpeg.writeFile('input.m3u8', inputData);
-
-      // Cut the clip using FFmpeg
-      await ffmpeg.exec([
-        '-ss', clip.startTime.toString(),
-        '-i', 'input.m3u8',
-        '-t', clip.duration.toString(),
-        '-c', 'copy',
-        '-movflags', 'faststart',
-        'output.mp4'
-      ]);
-
-      // Read the output file
-      const fileData = await ffmpeg.readFile('output.mp4');
-      const data = new Uint8Array(fileData as Uint8Array);
-      const blob = new Blob([data], { type: 'video/mp4' });
+      const blob = await response.blob();
+      console.log('Blob created, size:', blob.size, 'type:', blob.type);
       
       // Trigger download
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `clip-${clip.id}-${clip.formattedTime.replace(/[:\s]/g, '-')}.mp4`;
+      a.download = `test-clip-${clip.id}.png`;
       document.body.appendChild(a);
+      console.log('Download link created, triggering click...');
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      console.log('Download triggered successfully');
       toast.success(`Clip ${clip.id} downloaded!`, { id: `clip-${clip.id}` });
     } catch (error) {
       console.error('Download error:', error);
+      console.error('Error stack:', error instanceof Error ? error.stack : 'No stack');
       toast.error(`Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`, { id: `clip-${clip.id}` });
     } finally {
       setDownloadingClips(prev => {
