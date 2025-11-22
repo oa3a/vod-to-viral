@@ -21,59 +21,51 @@ const Results = () => {
   const [downloadingClips, setDownloadingClips] = useState<Set<number>>(new Set());
   const [ffmpegLoadError, setFfmpegLoadError] = useState<string | null>(null);
   const [useServerProcessing, setUseServerProcessing] = useState(false);
-  const [ffmpegLoadSeconds, setFfmpegLoadSeconds] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    const maxAttempts = 3;
-    const attemptTimeoutMs = 10000;
+    let loadingTimer: NodeJS.Timeout | null = null;
 
     const loadFFmpeg = async () => {
       if (isFFmpegLoaded || useServerProcessing) return;
 
       const ffmpeg = ffmpegRef.current;
+      console.log("ffmpeg: starting initialization...");
+      toast.loading("Loading video processor...", { id: "ffmpeg-load" });
 
-      for (let attempt = 1; attempt <= maxAttempts && !cancelled; attempt++) {
-        try {
-          console.log(`ffmpeg: start load (attempt ${attempt}/${maxAttempts})`);
-          setFfmpegLoadError(null);
-          toast.loading(
-            `Loading processor (${(attempt - 1) * (attemptTimeoutMs / 1000)}s/30s)…`,
-            { id: "ffmpeg-load" },
-          );
+      // Set a hard timeout for the entire loading process
+      loadingTimer = setTimeout(() => {
+        if (!isFFmpegLoaded && !cancelled) {
+          console.warn("ffmpeg: load timeout after 30s, switching to server processing");
+          setUseServerProcessing(true);
+          setFfmpegLoadError("Processor timeout - using server processing");
+          toast.info("Switching to server-side processing", { id: "ffmpeg-load" });
+        }
+      }, 30000);
 
-          const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-          const loadPromise = ffmpeg.load({
-            coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-            wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
-          });
+      try {
+        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+        
+        console.log("ffmpeg: fetching core files...");
+        const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
+        const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
+        
+        console.log("ffmpeg: loading with core files...");
+        await ffmpeg.load({ coreURL, wasmURL });
 
-          console.log("ffmpeg: waiting for load with timeout", attemptTimeoutMs, "ms");
-          await Promise.race([
-            loadPromise,
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error("ffmpeg: load timeout")), attemptTimeoutMs),
-            ),
-          ]);
-
-          if (cancelled) return;
-
+        if (!cancelled) {
+          if (loadingTimer) clearTimeout(loadingTimer);
           setIsFFmpegLoaded(true);
-          console.log("ffmpeg: loaded");
+          console.log("ffmpeg: loaded successfully!");
           toast.success("Video processor ready!", { id: "ffmpeg-load" });
-          return;
-        } catch (error) {
-          console.error(`ffmpeg: load error on attempt ${attempt}`, error);
-          if (attempt === maxAttempts && !cancelled) {
-            setFfmpegLoadError(
-              "FFmpeg failed to initialize. Falling back to server-side processing.",
-            );
-            setUseServerProcessing(true);
-            toast.error(
-              "Processor taking long — switching to server-side processing.",
-              { id: "ffmpeg-load" },
-            );
-          }
+        }
+      } catch (error) {
+        console.error("ffmpeg: load failed", error);
+        if (!cancelled) {
+          if (loadingTimer) clearTimeout(loadingTimer);
+          setFfmpegLoadError("Failed to load processor");
+          setUseServerProcessing(true);
+          toast.info("Using server-side processing", { id: "ffmpeg-load" });
         }
       }
     };
@@ -82,25 +74,13 @@ const Results = () => {
 
     return () => {
       cancelled = true;
+      if (loadingTimer) clearTimeout(loadingTimer);
     };
-  }, [isFFmpegLoaded, useServerProcessing]);
-
-  useEffect(() => {
-    if (isFFmpegLoaded || useServerProcessing) {
-      setFfmpegLoadSeconds(0);
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setFfmpegLoadSeconds((prev) => (prev >= 30 ? 30 : prev + 1));
-    }, 1000);
-
-    return () => clearInterval(interval);
   }, [isFFmpegLoaded, useServerProcessing]);
 
   const handleDownloadClip = async (clip: any) => {
     if (!isFFmpegLoaded && !useServerProcessing) {
-      toast.error('Video processor not ready yet. Please wait or enable server-side processing.');
+      toast.error('Video processor not ready yet. Please wait...', { id: `clip-${clip.id}` });
       return;
     }
 
@@ -428,7 +408,7 @@ const Results = () => {
                   {downloadingClips.has(clip.id)
                     ? 'Processing...'
                     : !isFFmpegLoaded && !useServerProcessing
-                      ? `Loading processor (${ffmpegLoadSeconds}s/30s)…`
+                      ? 'Loading processor...'
                       : useServerProcessing && !isFFmpegLoaded
                         ? 'Download via server'
                         : 'Download Clip'}
