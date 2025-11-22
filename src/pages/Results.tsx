@@ -169,16 +169,14 @@ const Results = () => {
 
       console.log(`Clip parameters: start=${startSeconds}s, duration=${duration}s, end=${endSeconds}s`);
 
-      if (useServerProcessing && !isFFmpegLoaded) {
+      // For local sample video, always use client-side FFmpeg (server can't access local assets)
+      const isLocalAsset = vodSourceUrl.startsWith('/assets/') || vodSourceUrl.startsWith('/public/');
+      
+      if (useServerProcessing && !isFFmpegLoaded && !isLocalAsset) {
         console.log('Using server-side processing fallback via process-clip function');
 
-        // Convert relative paths to absolute URLs for edge function
-        const absoluteVodUrl = vodSourceUrl.startsWith('http') 
-          ? vodSourceUrl 
-          : `${window.location.origin}${vodSourceUrl}`;
-
         const { data, error } = await supabase.functions.invoke('process-clip', {
-          body: { vodUrl: absoluteVodUrl, startTime: startSeconds, endTime: endSeconds },
+          body: { vodUrl: vodSourceUrl, startTime: startSeconds, endTime: endSeconds },
         });
 
         if (error) {
@@ -213,6 +211,12 @@ const Results = () => {
         URL.revokeObjectURL(url);
 
         toast.success(`Clip ${clip.id} downloaded via server!`, { id: `clip-${clip.id}` });
+        return;
+      }
+
+      // For local assets, ensure FFmpeg is loaded
+      if (isLocalAsset && !isFFmpegLoaded) {
+        toast.error('Video processor not ready. Please wait or refresh the page.', { id: `clip-${clip.id}` });
         return;
       }
 
