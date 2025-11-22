@@ -214,12 +214,6 @@ const Results = () => {
         return;
       }
 
-      // For local assets, ensure FFmpeg is loaded
-      if (isLocalAsset && !isFFmpegLoaded) {
-        toast.error('Video processor not ready. Please wait or refresh the page.', { id: `clip-${clip.id}` });
-        return;
-      }
-
       // Fetch the VOD content for client-side ffmpeg processing
       toast.loading(`Processing with FFmpeg...`, { id: `clip-${clip.id}` });
 
