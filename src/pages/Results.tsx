@@ -33,16 +33,6 @@ const Results = () => {
       console.log("ffmpeg: starting initialization...");
       toast.loading("Loading video processor...", { id: "ffmpeg-load" });
 
-      // Set a hard timeout for the entire loading process
-      loadingTimer = setTimeout(() => {
-        if (!isFFmpegLoaded && !cancelled) {
-          console.warn("ffmpeg: load timeout after 30s, switching to server processing");
-          setUseServerProcessing(true);
-          setFfmpegLoadError("Processor timeout - using server processing");
-          toast.info("Switching to server-side processing", { id: "ffmpeg-load" });
-        }
-      }, 30000);
-
       try {
         const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
         
@@ -54,7 +44,6 @@ const Results = () => {
         await ffmpeg.load({ coreURL, wasmURL });
 
         if (!cancelled) {
-          if (loadingTimer) clearTimeout(loadingTimer);
           setIsFFmpegLoaded(true);
           console.log("ffmpeg: loaded successfully!");
           toast.success("Video processor ready!", { id: "ffmpeg-load" });
@@ -62,10 +51,11 @@ const Results = () => {
       } catch (error) {
         console.error("ffmpeg: load failed", error);
         if (!cancelled) {
-          if (loadingTimer) clearTimeout(loadingTimer);
           setFfmpegLoadError("Failed to load processor");
-          setUseServerProcessing(true);
-          toast.info("Using server-side processing", { id: "ffmpeg-load" });
+          toast.error("Failed to load video processor. Please refresh the page.", { 
+            id: "ffmpeg-load",
+            duration: 5000 
+          });
         }
       }
     };
@@ -79,24 +69,25 @@ const Results = () => {
   }, [isFFmpegLoaded, useServerProcessing]);
 
   const handleDownloadClip = async (clip: any) => {
-    // Check if processor is ready
-    if (!isFFmpegLoaded && !useServerProcessing) {
-      toast.error('Video processor not ready yet. Please wait...', { id: `clip-${clip.id}` });
-      return;
-    }
-
-    // Check if FFmpeg failed to load and we should use server processing
-    if (ffmpegLoadError && !useServerProcessing) {
-      console.log('FFmpeg failed, switching to server processing');
-      setUseServerProcessing(true);
-      toast.info('Using server-side processing', { id: `clip-${clip.id}` });
-      // Re-trigger the download
-      setTimeout(() => handleDownloadClip(clip), 100);
-      return;
-    }
-
     if (downloadingClips.has(clip.id)) {
       toast.info('This clip is already being processed');
+      return;
+    }
+
+    // For local assets, we need FFmpeg to be loaded
+    const willNeedFFmpeg = !vodData.vodId || vodData.vodId === 'test';
+    
+    if (willNeedFFmpeg && !isFFmpegLoaded) {
+      toast.error('Video processor still loading. Please wait a moment...', { 
+        id: `clip-${clip.id}`,
+        duration: 3000 
+      });
+      return;
+    }
+
+    // For remote assets, we can use either FFmpeg or server processing
+    if (!willNeedFFmpeg && !isFFmpegLoaded && !useServerProcessing) {
+      toast.error('Video processor not ready yet. Please wait...', { id: `clip-${clip.id}` });
       return;
     }
 
@@ -203,12 +194,6 @@ const Results = () => {
 
         toast.success(`Clip ${clip.id} downloaded via server!`, { id: `clip-${clip.id}` });
         return;
-      }
-
-      // Ensure FFmpeg is loaded before processing
-      if (!isFFmpegLoaded) {
-        console.error('FFmpeg not loaded, cannot process');
-        throw new Error('Video processor not ready');
       }
 
       // Fetch the VOD content for client-side ffmpeg processing
