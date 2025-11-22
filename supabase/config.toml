@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.process-clip]
 verify_jwt = false
+
+[functions.proxy-vod]
+verify_jwt = false
