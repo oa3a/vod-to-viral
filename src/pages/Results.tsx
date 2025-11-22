@@ -93,10 +93,11 @@ const Results = () => {
 
     setDownloadingClips((prev) => new Set(prev).add(clip.id));
 
+    let vodSourceUrl: string | null = null;
+    let vodArrayBuffer: ArrayBuffer | null = null;
+
     try {
       toast.loading(`Downloading VOD...`, { id: `clip-${clip.id}` });
-
-      let vodSourceUrl: string;
 
       // For testing: Use local test files or fallback to sample MP4
       const testFilePaths = [
@@ -219,11 +220,11 @@ const Results = () => {
         throw new Error(`Input is not a video — upload MP4 or provide a valid VOD. Received: ${contentType}`);
       }
 
-      const vodData_buffer = await vodResponse.arrayBuffer();
-      console.log('VOD buffer size:', vodData_buffer.byteLength, 'bytes');
+      vodArrayBuffer = await vodResponse.arrayBuffer();
+      console.log('VOD buffer size:', vodArrayBuffer.byteLength, 'bytes');
 
       console.log('ffmpeg: writeFile input.mp4');
-      await ffmpeg.writeFile('input.mp4', new Uint8Array(vodData_buffer));
+      await ffmpeg.writeFile('input.mp4', new Uint8Array(vodArrayBuffer));
 
       console.log('ffmpeg: run start');
       
@@ -243,7 +244,7 @@ const Results = () => {
       ]);
 
       const execTimeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('FFmpeg processing timeout')), 60000)
+        setTimeout(() => reject(new Error('FFmpeg processing timeout')), 15000)
       );
 
       await Promise.race([execPromise, execTimeout]);
@@ -272,10 +273,27 @@ const Results = () => {
       toast.success(`Clip ${clip.id} downloaded!`, { id: `clip-${clip.id}` });
     } catch (error) {
       console.error('Download error:', error);
-      toast.error(
-        `Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        { id: `clip-${clip.id}` },
-      );
+
+      // If FFmpeg times out or fails but we have the original buffer, fall back to full video
+      if (vodArrayBuffer && vodSourceUrl) {
+        console.warn('Falling back to full video download');
+        const fallbackBlob = new Blob([vodArrayBuffer], { type: 'video/mp4' });
+        const fallbackUrl = URL.createObjectURL(fallbackBlob);
+        const a = document.createElement('a');
+        a.href = fallbackUrl;
+        a.download = `clip-${clip.id}-${clip.title.replace(/[^a-z0-9]/gi, '_')}-full.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(fallbackUrl);
+
+        toast.info('Clip processing failed, downloaded full video instead.', { id: `clip-${clip.id}` });
+      } else {
+        toast.error(
+          `Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          { id: `clip-${clip.id}` },
+        );
+      }
     } finally {
       setDownloadingClips((prev) => {
         const next = new Set(prev);
