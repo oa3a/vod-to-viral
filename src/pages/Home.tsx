@@ -9,18 +9,18 @@ const Home = () => {
   const [vodUrl, setVodUrl] = useState("");
   const navigate = useNavigate();
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!vodUrl.trim()) {
       toast.error("Please enter a Twitch VOD URL");
       return;
     }
 
-    if (!vodUrl.includes("twitch.tv")) {
-      toast.error("Please enter a valid Twitch VOD URL");
+    if (!vodUrl.includes("twitch.tv/videos/")) {
+      toast.error("Please enter a valid Twitch VOD link (e.g., https://www.twitch.tv/videos/123456789)");
       return;
     }
 
-    // Navigate to progress page
+    toast.success("Fetching VOD from Twitch...");
     navigate("/progress", { state: { vodUrl } });
   };
 

@@ -1,1 +1,4 @@
 project_id = "uhqxfttnjovuwhvhgclp"
+
+[functions.fetch-twitch-vod]
+verify_jwt = false
