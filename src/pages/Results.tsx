@@ -54,14 +54,44 @@ const Results = () => {
     },
   ];
 
-  const handleDownload = (clipId: number, title: string) => {
-    toast.success(`Downloading: ${title}`);
-    // In production, this would trigger actual download
+  const handleDownload = async (clipId: number, title: string) => {
+    try {
+      toast.success(`Preparing download: ${title}`);
+      
+      // Create a mock video blob (in production, this would be the actual processed clip)
+      // Using a sample video URL as placeholder for MVP
+      const response = await fetch('https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4');
+      const blob = await response.blob();
+      
+      // Create download URL
+      const url = URL.createObjectURL(blob);
+      
+      // Create temporary anchor element and trigger download
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${title.replace(/\s+/g, '_')}_clip_${clipId}.mp4`;
+      document.body.appendChild(a);
+      a.click();
+      
+      // Cleanup
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      toast.success(`Downloaded: ${title}`);
+    } catch (error) {
+      toast.error('Download failed. Please try again.');
+    }
   };
 
-  const handleDownloadAll = () => {
-    toast.success("Preparing ZIP file with all clips...");
-    // In production, this would trigger ZIP download
+  const handleDownloadAll = async () => {
+    toast.success("Preparing all clips for download...");
+    
+    // Download each clip sequentially
+    for (const clip of clips) {
+      await handleDownload(clip.id, clip.title);
+      // Small delay between downloads to prevent browser blocking
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
   };
 
   if (!vodUrl) {
