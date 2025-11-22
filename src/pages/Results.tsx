@@ -244,7 +244,7 @@ const Results = () => {
       ]);
 
       const execTimeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('FFmpeg processing timeout')), 15000)
+        setTimeout(() => reject(new Error('FFmpeg processing timeout')), 60000)
       );
 
       await Promise.race([execPromise, execTimeout]);
@@ -273,21 +273,31 @@ const Results = () => {
       toast.success(`Clip ${clip.id} downloaded!`, { id: `clip-${clip.id}` });
     } catch (error) {
       console.error('Download error:', error);
+      console.log('Error recovery - vodArrayBuffer:', vodArrayBuffer ? `${vodArrayBuffer.byteLength} bytes` : 'null');
+      console.log('Error recovery - vodSourceUrl:', vodSourceUrl);
 
       // If FFmpeg times out or fails but we have the original buffer, fall back to full video
-      if (vodArrayBuffer && vodSourceUrl) {
+      if (vodArrayBuffer) {
         console.warn('Falling back to full video download');
-        const fallbackBlob = new Blob([vodArrayBuffer], { type: 'video/mp4' });
-        const fallbackUrl = URL.createObjectURL(fallbackBlob);
-        const a = document.createElement('a');
-        a.href = fallbackUrl;
-        a.download = `clip-${clip.id}-${clip.title.replace(/[^a-z0-9]/gi, '_')}-full.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(fallbackUrl);
+        try {
+          const fallbackBlob = new Blob([vodArrayBuffer], { type: 'video/mp4' });
+          const fallbackUrl = URL.createObjectURL(fallbackBlob);
+          const a = document.createElement('a');
+          a.href = fallbackUrl;
+          a.download = `clip-${clip.id}-${clip.title.replace(/[^a-z0-9]/gi, '_')}-full.mp4`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(fallbackUrl);
 
-        toast.info('Clip processing failed, downloaded full video instead.', { id: `clip-${clip.id}` });
+          toast.info('Clip processing timed out, downloaded full video instead.', { id: `clip-${clip.id}` });
+        } catch (fallbackError) {
+          console.error('Fallback download also failed:', fallbackError);
+          toast.error(
+            `Failed to download: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            { id: `clip-${clip.id}` },
+          );
+        }
       } else {
         toast.error(
           `Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`,
