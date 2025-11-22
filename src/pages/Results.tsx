@@ -8,121 +8,26 @@ const Results = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const vodUrl = location.state?.vodUrl;
+  const vodData = location.state?.vodData;
 
-  // Mock data for generated clips
-  const clips = [
-    {
-      id: 1,
-      title: "Epic Pentakill Moment",
-      duration: "0:18",
-      viralScore: 95,
-      thumbnail: "https://images.unsplash.com/photo-1542751371-adc38448a05e?w=400&h=700&fit=crop",
-    },
-    {
-      id: 2,
-      title: "Insane 1v4 Clutch",
-      duration: "0:24",
-      viralScore: 92,
-      thumbnail: "https://images.unsplash.com/photo-1552820728-8b83bb6b773f?w=400&h=700&fit=crop",
-    },
-    {
-      id: 3,
-      title: "Perfect Timing Jump Scare",
-      duration: "0:12",
-      viralScore: 88,
-      thumbnail: "https://images.unsplash.com/photo-1538481199705-c710c4e965fc?w=400&h=700&fit=crop",
-    },
-    {
-      id: 4,
-      title: "Chat Goes Wild",
-      duration: "0:15",
-      viralScore: 85,
-      thumbnail: "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=400&h=700&fit=crop",
-    },
-    {
-      id: 5,
-      title: "Unexpected Victory",
-      duration: "0:21",
-      viralScore: 82,
-      thumbnail: "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=400&h=700&fit=crop",
-    },
-    {
-      id: 6,
-      title: "Funny Rage Moment",
-      duration: "0:16",
-      viralScore: 79,
-      thumbnail: "https://images.unsplash.com/photo-1556438758-8d49568ce18e?w=400&h=700&fit=crop",
-    },
-  ];
+  // Use real clips from Twitch VOD data
+  const clips = vodData?.clips || [];
 
-  const [downloadUrls, setDownloadUrls] = useState<Record<number, string>>({});
-
-  useEffect(() => {
-    let createdUrls: string[] = [];
-
-    const prepareDownloadUrls = async () => {
-      try {
-        // In a real app, each clip would have its own video source (base64/ArrayBuffer).
-        // For the MVP, we use a local demo mp4 file and create Blob URLs from it.
-        const response = await fetch("/videos/demo-clip.mp4");
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        createdUrls.push(url);
-
-        const urlsMap: Record<number, string> = {};
-        for (const clip of clips) {
-          urlsMap[clip.id] = url;
-        }
-
-        setDownloadUrls(urlsMap);
-      } catch (error) {
-        console.error("Failed to prepare clip download URLs", error);
-        toast.error("Failed to prepare clip downloads. Please refresh and try again.");
-      }
-    };
-
-    prepareDownloadUrls();
-
-    return () => {
-      createdUrls.forEach((url) => URL.revokeObjectURL(url));
-    };
-  }, []);
-
-  const downloadClip = (clipId: number, title: string) => {
-    const url = downloadUrls[clipId];
-
-    if (!url) {
-      toast.error("Clip is still preparing. Please try again in a moment.");
-      return;
-    }
-
-    const safeTitle = title.replace(/[^a-z0-9]+/gi, "_").toLowerCase();
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${safeTitle}_clip_${clipId}.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-
-    toast.success(`Downloading: ${title}`);
+  const handleDownloadClip = (clip: any) => {
+    toast.info(
+      `Download functionality coming soon! This will download the clip from ${clip.formattedTime} (${clip.duration}s).`,
+      { duration: 4000 }
+    );
   };
 
   const handleDownloadAll = () => {
-    if (Object.keys(downloadUrls).length === 0) {
-      toast.error("Clips are still preparing. Please try again in a moment.");
-      return;
-    }
-
-    toast.success("Starting downloads for all clips...");
-
-    clips.forEach((clip, index) => {
-      setTimeout(() => {
-        downloadClip(clip.id, clip.title);
-      }, index * 500);
-    });
+    toast.info(
+      'Bulk download coming soon! In production, this will process and download all clips as .mp4 files.',
+      { duration: 4000 }
+    );
   };
 
-  if (!vodUrl) {
+  if (!vodUrl || !vodData) {
     navigate("/");
     return null;
   }
@@ -163,8 +68,11 @@ const Results = () => {
           <h1 className="text-4xl md:text-5xl font-bold mb-3 text-foreground">
             {clips.length} Viral Clips Ready
           </h1>
-          <p className="text-lg text-muted-foreground">
-            AI-powered detection found the best moments from your VOD
+          <p className="text-lg text-muted-foreground mb-2">
+            Generated from: {vodData.title}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Duration: {vodData.duration} • {vodData.userName}
           </p>
         </div>
 
@@ -179,16 +87,16 @@ const Results = () => {
               {/* Thumbnail */}
               <div className="relative aspect-[9/16] overflow-hidden bg-muted">
                 <img
-                  src={clip.thumbnail}
+                  src={vodData.thumbnail.replace('%{width}', '400').replace('%{height}', '700')}
                   alt={clip.title}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-background/20 to-transparent" />
                 
-                {/* Duration Badge */}
+                {/* Time Range Badge */}
                 <div className="absolute top-3 right-3 px-2 py-1 rounded-md bg-background/80 backdrop-blur-sm flex items-center gap-1">
                   <Clock className="w-3 h-3 text-foreground" />
-                  <span className="text-xs font-medium text-foreground">{clip.duration}</span>
+                  <span className="text-xs font-medium text-foreground">{clip.formattedTime}</span>
                 </div>
 
                 {/* Viral Score Badge */}
@@ -196,30 +104,28 @@ const Results = () => {
                   <Star className="w-3 h-3 text-primary fill-primary" />
                   <span className="text-xs font-bold text-primary">{clip.viralScore}</span>
                 </div>
+
+                {/* Duration Overlay */}
+                <div className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-background/90 backdrop-blur-sm">
+                  <span className="text-xs font-bold text-foreground">{clip.duration}s</span>
+                </div>
               </div>
 
               {/* Content */}
               <div className="p-4">
-                <h3 className="font-semibold text-foreground mb-3 line-clamp-1">
+                <h3 className="font-semibold text-foreground mb-1 line-clamp-1">
                   {clip.title}
                 </h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  {clip.formattedTime} • {clip.duration} seconds
+                </p>
                 <Button
-                  asChild
+                  onClick={() => handleDownloadClip(clip)}
                   className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
                   size="sm"
                 >
-                  <a
-                    href={downloadUrls[clip.id]}
-                    download={`${clip.title.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}_clip_${clip.id}.mp4`}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      downloadClip(clip.id, clip.title);
-                    }}
-                    className="flex items-center justify-center gap-2 w-full"
-                  >
-                    <Download className="w-4 h-4" />
-                    <span>Download Clip</span>
-                  </a>
+                  <Download className="w-4 h-4" />
+                  Download Clip
                 </Button>
               </div>
             </div>

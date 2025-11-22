@@ -1,21 +1,24 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Loader2, CheckCircle2 } from "lucide-react";
+import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 const Progress = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const vodUrl = location.state?.vodUrl;
-
+  const [vodData, setVodData] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState(0);
 
   const steps = [
-    { label: "Downloading VOD", duration: 2000 },
-    { label: "Analyzing audio patterns", duration: 3000 },
-    { label: "Detecting hype moments", duration: 2500 },
-    { label: "Processing facial expressions", duration: 2000 },
-    { label: "Generating clips", duration: 3000 },
-    { label: "Adding effects & captions", duration: 2500 },
+    { label: error ? "Error Occurred" : vodData ? "VOD Retrieved from Twitch" : "Fetching VOD from Twitch", duration: 2000 },
+    { label: "Analyzing audio patterns", duration: 2000 },
+    { label: "Detecting hype moments", duration: 2000 },
+    { label: "Processing facial expressions", duration: 1500 },
+    { label: "Generating clips", duration: 2000 },
+    { label: "Adding effects & captions", duration: 1500 },
   ];
 
   useEffect(() => {
@@ -24,21 +27,52 @@ const Progress = () => {
       return;
     }
 
+    const fetchVodData = async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke('fetch-twitch-vod', {
+          body: { vodUrl }
+        });
+
+        if (error) throw error;
+
+        if (data.error) {
+          setError(data.error);
+          toast.error(`Failed to fetch VOD: ${data.error}`);
+          setTimeout(() => navigate("/"), 3000);
+          return;
+        }
+
+        setVodData(data);
+        console.log('VOD Data:', data);
+      } catch (err) {
+        console.error('Error fetching VOD:', err);
+        setError(err instanceof Error ? err.message : 'Failed to fetch VOD');
+        toast.error('Failed to fetch VOD from Twitch');
+        setTimeout(() => navigate("/"), 3000);
+      }
+    };
+
+    fetchVodData();
+  }, [vodUrl, navigate]);
+
+  useEffect(() => {
+    if (error) return;
+
     let timeout: NodeJS.Timeout;
 
     if (currentStep < steps.length) {
       timeout = setTimeout(() => {
         setCurrentStep((prev) => prev + 1);
       }, steps[currentStep].duration);
-    } else {
+    } else if (vodData) {
       // All steps complete, navigate to results
       timeout = setTimeout(() => {
-        navigate("/results", { state: { vodUrl } });
+        navigate("/results", { state: { vodUrl, vodData } });
       }, 1000);
     }
 
     return () => clearTimeout(timeout);
-  }, [currentStep, vodUrl, navigate]);
+  }, [currentStep, vodData, error, vodUrl, navigate]);
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden flex items-center justify-center">
@@ -53,10 +87,10 @@ const Progress = () => {
               <Loader2 className="w-10 h-10 text-primary animate-spin" />
             </div>
             <h2 className="text-3xl font-bold mb-3 text-foreground">
-              Creating Your Viral Clips
+              {error ? "Processing Failed" : "Creating Your Viral Clips"}
             </h2>
             <p className="text-muted-foreground">
-              This may take a few minutes depending on VOD length
+              {error ? "There was an error processing your VOD" : "This may take a few minutes depending on VOD length"}
             </p>
           </div>
 
