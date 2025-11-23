@@ -41,54 +41,6 @@ async function loadFallbackSampleVod(requestUrl: URL): Promise<{ buffer: Uint8Ar
   return { buffer, mimeType };
 }
 
-/**
- * Write buffer to disk path (temp) and return path
- */
-async function writeTempFile(prefix = "clip", buffer: Uint8Array): Promise<string> {
-  const tmpDir = Deno.env.get("TMPDIR") || "/tmp";
-  const name = `${prefix}-${crypto.randomUUID()}.mp4`;
-  const full = `${tmpDir}/${name}`;
-  await Deno.writeFile(full, buffer);
-  return full;
-}
-
-/**
- * Try to run native ffmpeg. Returns path to output file.
- * If Deno.run fails because runtime does not allow spawning, caller should use remote service fallback.
- */
-async function runNativeFfmpeg(
-  inputPath: string,
-  outputPath: string,
-  startTime: string,
-  endTime: string,
-): Promise<void> {
-  // ffmpeg args: -ss start -to end -i input -c copy output
-  // using '-y' to overwrite if exists
-  const args = ["-ss", startTime, "-to", endTime, "-i", inputPath, "-c", "copy", "-y", outputPath];
-  console.log("process-clip: running ffmpeg", args.join(" "));
-
-  // spawn process
-  const p = Deno.run({
-    cmd: ["ffmpeg", ...args],
-    stdout: "piped",
-    stderr: "piped",
-  });
-
-  const [status, rawOut, rawErr] = await Promise.all([p.status(), p.output(), p.stderrOutput()]);
-  const outText = new TextDecoder().decode(rawOut);
-  const errText = new TextDecoder().decode(rawErr);
-
-  console.log("process-clip: ffmpeg status", status.code);
-  if (outText) console.log("process-clip: ffmpeg stdout", outText.slice(0, 1000));
-  if (errText) console.log("process-clip: ffmpeg stderr", errText.slice(0, 2000));
-
-  if (!status.success) {
-    // cleanup process handle
-    p.close();
-    throw new Error(`ffmpeg failed with code ${status.code}: ${errText.slice(0, 400)}`);
-  }
-  p.close();
-}
 
 /**
  * Use remote FFmpeg-style service API to trim.
@@ -96,26 +48,33 @@ async function runNativeFfmpeg(
  */
 async function callFfmpegService(
   serviceUrl: string,
-  vodUrl: string,
+  inputBuffer: Uint8Array,
   startTime: string,
   endTime: string,
-): Promise<Uint8Array> {
+): Promise<ArrayBuffer> {
   console.log("process-clip: calling remote ffmpeg service", serviceUrl);
-  const resp = await fetchWithTimeout(serviceUrl, 120_000);
-  // NOTE: some services require POST and JSON; adapt if needed
-  // We'll try POST with JSON:
-  const postResp = await fetch(serviceUrl, {
+  
+  const postResp = await fetchWithTimeout(serviceUrl, 120_000);
+  
+  const formData = new FormData();
+  const cleanBuffer = new Uint8Array(inputBuffer).buffer;
+  formData.append("video", new Blob([cleanBuffer], { type: "video/mp4" }), "input.mp4");
+  formData.append("startTime", startTime);
+  formData.append("endTime", endTime);
+  
+  const response = await fetch(serviceUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ vodUrl, startTime, endTime }),
+    body: formData,
   });
-  if (!postResp.ok) {
-    const body = await postResp.text().catch(() => "<no body>");
-    throw new Error(`Remote ffmpeg service failed: ${postResp.status} ${body}`);
+  
+  if (!response.ok) {
+    const body = await response.text().catch(() => "<no body>");
+    throw new Error(`Remote ffmpeg service failed: ${response.status} ${body}`);
   }
-  const ab = new Uint8Array(await postResp.arrayBuffer());
-  console.log("process-clip: remote service returned", ab.byteLength, "bytes");
-  return ab;
+  
+  const arrayBuffer = await response.arrayBuffer();
+  console.log("process-clip: remote service returned", arrayBuffer.byteLength, "bytes");
+  return arrayBuffer;
 }
 
 serve(async (req) => {
@@ -226,47 +185,29 @@ serve(async (req) => {
 
     // At this point we have inputBuffer & inputMimeType
 
-    // Write inputBuffer to a temporary file for ffmpeg
-    const inputTmp = await writeTempFile("input", inputBuffer);
-    const outputTmp = inputTmp.replace(/(\.mp4)?$/, "") + "-out.mp4";
-
-    // Attempt native ffmpeg if available and allowed
-    const ffmpegServiceUrl = Deno.env.get("FFMPEG_SERVICE_URL"); // optional, remote service
-    let outputBuffer: Uint8Array | null = null;
-
-    try {
-      if (ffmpegServiceUrl) {
-        // Use remote service (POST JSON)
-        console.log("process-clip: using remote ffmpeg service at", ffmpegServiceUrl);
-        outputBuffer = await callFfmpegService(ffmpegServiceUrl, `file://${inputTmp}`, startTime, endTime);
-      } else {
-        // Try native ffmpeg via Deno.run
-        console.log("process-clip: trying native ffmpeg");
-        // ensure inputTmp exists
-        await Deno.stat(inputTmp);
-        await runNativeFfmpeg(inputTmp, outputTmp, startTime, endTime);
-        // read output file
-        outputBuffer = await Deno.readFile(outputTmp);
-      }
-    } catch (ffErr) {
-      console.error("process-clip: ffmpeg processing failed", ffErr);
-      // cleanup temp files if exists
-      try {
-        await Deno.remove(inputTmp);
-      } catch (_) {}
-      try {
-        await Deno.remove(outputTmp);
-      } catch (_) {}
-      return new Response(JSON.stringify({ error: "ffmpeg_processing_failed", details: String(ffErr) }), {
+    // Check for remote FFmpeg service URL
+    const ffmpegServiceUrl = Deno.env.get("FFMPEG_SERVICE_URL");
+    
+    if (!ffmpegServiceUrl) {
+      console.error("process-clip: FFMPEG_SERVICE_URL not configured");
+      return new Response(JSON.stringify({ error: "ffmpeg_service_not_configured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // cleanup input tmp
+    let outputBuffer: ArrayBuffer;
+
     try {
-      await Deno.remove(inputTmp);
-    } catch (_) {}
+      console.log("process-clip: using remote ffmpeg service at", ffmpegServiceUrl);
+      outputBuffer = await callFfmpegService(ffmpegServiceUrl, inputBuffer, startTime, endTime);
+    } catch (ffErr) {
+      console.error("process-clip: ffmpeg processing failed", ffErr);
+      return new Response(JSON.stringify({ error: "ffmpeg_processing_failed", details: String(ffErr) }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     if (!outputBuffer || outputBuffer.byteLength === 0) {
       console.error("process-clip: output buffer empty");
@@ -276,7 +217,7 @@ serve(async (req) => {
       });
     }
 
-    // Return binary MP4 directly
+    // Return binary MP4 directly using ArrayBuffer
     console.log("process-clip: returning trimmed clip", outputBuffer.byteLength, "bytes");
 
     const headers = new Headers({
