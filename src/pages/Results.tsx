@@ -23,20 +23,53 @@ const Results = () => {
     setDownloadingClips((prev) => new Set(prev).add(clip.id));
 
     try {
-      toast.loading(`Requesting clip processing...`, { id: `clip-${clip.id}` });
+      toast.loading(`Preparing clip ${clip.id}...`, { id: `clip-${clip.id}` });
 
-      // Use sample video for testing/development
-      const testVodUrl = '/assets/sample_vod.mp4';
+      // Get absolute URL for the VOD
+      let absoluteVodUrl: string;
+
+      // For testing, convert relative path to absolute URL
+      if (vodData.vodId === 'test' || !vodData.vodId) {
+        // Use sample video with absolute URL
+        const currentUrl = new URL(window.location.href);
+        absoluteVodUrl = new URL('/assets/sample_vod.mp4', currentUrl.origin).toString();
+        console.log('Using test video (absolute URL):', absoluteVodUrl);
+      } else {
+        // For real Twitch VODs, get the stream URL
+        console.log('Fetching stream URL for VOD:', vodData.vodId);
+        const { data: streamData, error: streamError } = await supabase.functions.invoke('get-vod-stream', {
+          body: { vodId: vodData.vodId },
+        });
+
+        if (streamError || !streamData?.streamUrl) {
+          console.error('Failed to get stream URL:', streamError);
+          throw new Error('Failed to get video stream URL');
+        }
+
+        absoluteVodUrl = streamData.streamUrl;
+        console.log('Got stream URL from Twitch:', absoluteVodUrl);
+      }
+
+      // Validate URL is absolute
+      if (!absoluteVodUrl.startsWith('http://') && !absoluteVodUrl.startsWith('https://')) {
+        console.error('VOD URL is not absolute:', absoluteVodUrl);
+        throw new Error(`Invalid VOD URL format: ${absoluteVodUrl}`);
+      }
+
+      console.log('Final absolute VOD URL:', absoluteVodUrl);
+
       const startSeconds = clip.startTime;
       const endSeconds = clip.endTime;
 
       console.log(`Clip ${clip.id}: Calling process-clip edge function`);
-      console.log(`Parameters: vodUrl=${testVodUrl}, start=${startSeconds}s, end=${endSeconds}s`);
+      console.log(`Parameters: vodUrl=${absoluteVodUrl}, start=${startSeconds}s, end=${endSeconds}s`);
+
+      toast.loading(`Processing clip ${clip.id} on server...`, { id: `clip-${clip.id}` });
 
       // Call Supabase edge function which will call Railway
       const { data, error } = await supabase.functions.invoke('process-clip', {
         body: { 
-          vodUrl: testVodUrl,
+          vodUrl: absoluteVodUrl,
           startTime: startSeconds, 
           endTime: endSeconds 
         },

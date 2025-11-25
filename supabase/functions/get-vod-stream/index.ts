@@ -88,30 +88,53 @@ serve(async (req) => {
 
     const vod = vodData.data[0];
     
-    // Twitch VOD HLS stream URL pattern
-    const streamUrl = `https://vod-secure.twitch.tv/_${vodId}/chunked/index-dvr.m3u8`;
+    // Construct Twitch VOD HLS stream URL
+    // Twitch uses CloudFront CDN for VOD delivery
+    const streamUrl = `https://d2nvs31859zcd8.cloudfront.net/${vodId}_${vod.user_login}_${vod.created_at}/chunked/index-dvr.m3u8`;
     console.log('get-vod-stream: constructed stream URL:', streamUrl);
 
-    // Try to fetch the playlist to validate it
-    const playlistResponse = await fetch(streamUrl);
-    
-    if (!playlistResponse.ok) {
-      console.warn('get-vod-stream: playlist URL not directly accessible (may need token)');
-      // Return the URL anyway - Railway might handle authentication differently
-    } else {
-      console.log('get-vod-stream: playlist accessible');
+    // Verify the URL is absolute
+    if (!streamUrl.startsWith('http://') && !streamUrl.startsWith('https://')) {
+      console.error('get-vod-stream: generated URL is not absolute:', streamUrl);
+      return new Response(
+        JSON.stringify({ error: 'Failed to generate absolute stream URL' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
+    // Try to fetch the playlist to get the real URL (may redirect)
+    try {
+      const playlistCheck = await fetch(streamUrl, { 
+        method: 'HEAD',
+        redirect: 'follow' 
+      });
+      
+      if (playlistCheck.ok) {
+        // Use the final URL after redirects
+        const finalUrl = playlistCheck.url || streamUrl;
+        console.log('get-vod-stream: playlist accessible, final URL:', finalUrl);
+        
+        return new Response(
+          JSON.stringify({ 
+            streamUrl: finalUrl,
+            vodTitle: vod.title,
+            vodDuration: vod.duration,
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    } catch (checkError) {
+      console.warn('get-vod-stream: could not verify playlist URL:', checkError);
+    }
+
+    // Return constructed URL even if we can't verify it
     return new Response(
       JSON.stringify({ 
         streamUrl,
         vodTitle: vod.title,
         vodDuration: vod.duration,
       }),
-      { 
-        status: 200, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-      }
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
