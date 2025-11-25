@@ -1,13 +1,9 @@
-import { useEffect, useState, useRef } from "react";
+import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Download, ArrowLeft, Star, Clock, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { supabase } from "@/integrations/supabase/client";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 
 const Results = () => {
   const location = useLocation();
@@ -16,57 +12,7 @@ const Results = () => {
   const vodData = location.state?.vodData;
 
   const clips = vodData?.clips || [];
-  const ffmpegRef = useRef(new FFmpeg());
-  const [isFFmpegLoaded, setIsFFmpegLoaded] = useState(false);
   const [downloadingClips, setDownloadingClips] = useState<Set<number>>(new Set());
-  const [ffmpegLoadError, setFfmpegLoadError] = useState<string | null>(null);
-  const [useServerProcessing, setUseServerProcessing] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    let loadingTimer: NodeJS.Timeout | null = null;
-
-    const loadFFmpeg = async () => {
-      if (isFFmpegLoaded || useServerProcessing) return;
-
-      const ffmpeg = ffmpegRef.current;
-      console.log("ffmpeg: starting initialization...");
-      toast.loading("Loading video processor...", { id: "ffmpeg-load" });
-
-      try {
-        const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-        
-        console.log("ffmpeg: fetching core files...");
-        const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript");
-        const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm");
-        
-        console.log("ffmpeg: loading with core files...");
-        await ffmpeg.load({ coreURL, wasmURL });
-
-        if (!cancelled) {
-          setIsFFmpegLoaded(true);
-          console.log("ffmpeg: loaded successfully!");
-          toast.success("Video processor ready!", { id: "ffmpeg-load" });
-        }
-      } catch (error) {
-        console.error("ffmpeg: load failed", error);
-        if (!cancelled) {
-          setFfmpegLoadError("Failed to load processor");
-          toast.error("Failed to load video processor. Please refresh the page.", { 
-            id: "ffmpeg-load",
-            duration: 5000 
-          });
-        }
-      }
-    };
-
-    loadFFmpeg();
-
-    return () => {
-      cancelled = true;
-      if (loadingTimer) clearTimeout(loadingTimer);
-    };
-  }, [isFFmpegLoaded, useServerProcessing]);
 
   const handleDownloadClip = async (clip: any) => {
     if (downloadingClips.has(clip.id)) {
@@ -74,191 +20,83 @@ const Results = () => {
       return;
     }
 
-    // For local assets, we need FFmpeg to be loaded
-    const willNeedFFmpeg = !vodData.vodId || vodData.vodId === 'test';
-    
-    if (willNeedFFmpeg && !isFFmpegLoaded) {
-      toast.error('Video processor still loading. Please wait a moment...', { 
-        id: `clip-${clip.id}`,
-        duration: 3000 
-      });
-      return;
-    }
-
-    // For remote assets, we can use either FFmpeg or server processing
-    if (!willNeedFFmpeg && !isFFmpegLoaded && !useServerProcessing) {
-      toast.error('Video processor not ready yet. Please wait...', { id: `clip-${clip.id}` });
-      return;
-    }
-
     setDownloadingClips((prev) => new Set(prev).add(clip.id));
 
-    let vodSourceUrl: string | null = null;
-    let vodArrayBuffer: ArrayBuffer | null = null;
-
     try {
-      toast.loading(`Downloading VOD...`, { id: `clip-${clip.id}` });
+      toast.loading(`Requesting clip processing...`, { id: `clip-${clip.id}` });
 
-      // For testing: Use local test files or fallback to sample MP4
-      const testFilePaths = [
-        '/mnt/data/183cc8b2-89a7-48af-8194-99a1a83cb478.png',
-        '/mnt/data/d4b5f121-4b65-4aa1-aaed-0bdf3fcdea6f.png',
-      ];
+      // Use sample video for testing/development
+      const testVodUrl = '/assets/sample_vod.mp4';
+      const startSeconds = clip.startTime;
+      const endSeconds = clip.endTime;
 
-      // Check if we're in test mode (no vodId or using test data)
-      const isTestMode = !vodData.vodId || vodData.vodId === 'test';
+      console.log(`Clip ${clip.id}: Calling process-clip edge function`);
+      console.log(`Parameters: vodUrl=${testVodUrl}, start=${startSeconds}s, end=${endSeconds}s`);
 
-      if (isTestMode) {
-        console.log('Test mode: checking test files...');
-        let testVideoFound = false;
+      // Call Supabase edge function which will call Railway
+      const { data, error } = await supabase.functions.invoke('process-clip', {
+        body: { 
+          vodUrl: testVodUrl,
+          startTime: startSeconds, 
+          endTime: endSeconds 
+        },
+      });
 
-        for (const path of testFilePaths) {
-          try {
-            console.log('Checking test file:', path);
-            const testResponse = await fetch(path);
-            const contentType = testResponse.headers.get('content-type') || '';
-            console.log('Test file content-type:', contentType);
+      if (error) {
+        console.error('Edge function error:', error);
+        throw new Error(error.message || 'Failed to process clip');
+      }
 
-            if (contentType.includes('video')) {
-              vodSourceUrl = path;
-              testVideoFound = true;
-              console.log('Using test file as video source:', path);
-              break;
-            }
-          } catch (error) {
-            console.log('Test file not accessible:', path, error);
-          }
-        }
+      // Check if we got a Blob/ArrayBuffer response
+      if (!data) {
+        console.error('No data received from edge function');
+        throw new Error('No data received from server');
+      }
 
-        if (!testVideoFound) {
-          console.log('No valid test video found, using sample MP4 fallback');
-          vodSourceUrl = '/assets/sample_vod.mp4';
-          toast.info('Using sample video for testing', { id: `clip-${clip.id}` });
-        }
+      console.log('Received data type:', typeof data);
+      console.log('Data instanceof Blob:', data instanceof Blob);
+      console.log('Data instanceof ArrayBuffer:', data instanceof ArrayBuffer);
+
+      let mp4Blob: Blob;
+
+      // Handle different response types
+      if (data instanceof Blob) {
+        mp4Blob = data;
+      } else if (data instanceof ArrayBuffer) {
+        mp4Blob = new Blob([data], { type: 'video/mp4' });
+      } else if (typeof data === 'object' && data.error) {
+        throw new Error(data.error);
       } else {
-        // Production mode: Twitch VODs require authentication and can't be fetched directly
-        // For now, fall back to sample video - real implementation would need a proxy
-        console.warn('Production Twitch VOD mode not yet supported - using sample video');
-        vodSourceUrl = '/assets/sample_vod.mp4';
-        toast.info('Twitch VOD download requires proxy setup. Using sample video for now.', { 
-          id: `clip-${clip.id}`,
-          duration: 5000
-        });
+        console.error('Unexpected data format:', data);
+        throw new Error('Invalid response format from server');
       }
 
-      const startSeconds = Math.floor(clip.startTime / 1000);
-      const duration = clip.duration;
-      const endSeconds = startSeconds + duration;
+      console.log('MP4 blob size:', mp4Blob.size, 'bytes');
 
-      console.log(`Clip parameters: start=${startSeconds}s, duration=${duration}s, end=${endSeconds}s`);
-
-      // For local sample video, always use client-side FFmpeg (server can't access local assets)
-      const isLocalAsset = vodSourceUrl.startsWith('/assets/') || vodSourceUrl.startsWith('/public/');
-      
-      if (useServerProcessing && !isFFmpegLoaded && !isLocalAsset) {
-        console.log('Using server-side processing fallback via process-clip function');
-
-        const { data, error } = await supabase.functions.invoke('process-clip', {
-          body: { vodUrl: vodSourceUrl, startTime: startSeconds, endTime: endSeconds },
-        });
-
-        if (error) {
-          console.error('Server-side processing error:', error);
-          throw new Error('Server-side processing failed');
-        }
-
-        if (!data || typeof (data as any).clipBase64 !== 'string') {
-          console.error('Invalid response from server-side processor:', data);
-          throw new Error('Invalid response from server-side processor');
-        }
-
-        const responseData = data as { clipBase64: string; mimeType?: string };
-        const byteCharacters = atob(responseData.clipBase64);
-        const byteNumbers = new Array(byteCharacters.length);
-
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-
-        const byteArray = new Uint8Array(byteNumbers);
-        const mp4Blob = new Blob([byteArray.buffer], { type: responseData.mimeType || 'video/mp4' });
-        console.log('Server-side MP4 blob size:', mp4Blob.size, 'bytes');
-
-        const url = URL.createObjectURL(mp4Blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `clip-${clip.id}-${clip.title.replace(/[^a-z0-9]/gi, '_')}.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        toast.success(`Clip ${clip.id} downloaded via server!`, { id: `clip-${clip.id}` });
-        return;
+      if (mp4Blob.size === 0) {
+        throw new Error('Received empty video file');
       }
 
-      // Fetch the VOD content for client-side ffmpeg processing
-      toast.loading(`Processing with FFmpeg...`, { id: `clip-${clip.id}` });
+      // Verify it's a video file by checking the first bytes
+      const headerCheck = await mp4Blob.slice(0, 12).arrayBuffer();
+      const headerView = new Uint8Array(headerCheck);
+      const headerHex = Array.from(headerView).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      console.log('File header (first 12 bytes):', headerHex);
 
-      console.log('ffmpeg: fetching VOD for client-side processing');
-      const ffmpeg = ffmpegRef.current;
-      const vodResponse = await fetch(vodSourceUrl);
-
-      if (!vodResponse.ok) {
-        throw new Error(`Failed to fetch VOD: ${vodResponse.status}`);
-      }
-
-      // Check MIME type
-      const contentType = vodResponse.headers.get('content-type') || '';
-      console.log('VOD Content-Type:', contentType);
-
-      if (
-        !contentType.includes('video') &&
-        !contentType.includes('application/vnd.apple.mpegurl') &&
-        !contentType.includes('application/octet-stream')
-      ) {
-        throw new Error(`Input is not a video — upload MP4 or provide a valid VOD. Received: ${contentType}`);
-      }
-
-      vodArrayBuffer = await vodResponse.arrayBuffer();
-      console.log('VOD buffer size:', vodArrayBuffer.byteLength, 'bytes');
-
-      console.log('ffmpeg: writeFile input.mp4');
-      await ffmpeg.writeFile('input.mp4', new Uint8Array(vodArrayBuffer));
-
-      console.log('ffmpeg: run start');
-      
-      // Add timeout for ffmpeg.exec to prevent hanging
-      const execPromise = ffmpeg.exec([
-        '-ss',
-        startSeconds.toString(),
-        '-i',
-        'input.mp4',
-        '-t',
-        duration.toString(),
-        '-c',
-        'copy',
-        '-avoid_negative_ts',
-        'make_zero',
-        'output.mp4',
-      ]);
-
-      const execTimeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('FFmpeg processing timeout')), 60000)
+      // MP4 files should start with specific signatures
+      const isMP4 = (
+        // ftyp box signature
+        (headerView[4] === 0x66 && headerView[5] === 0x74 && headerView[6] === 0x79 && headerView[7] === 0x70) ||
+        // Alternative: starts with size then ftyp
+        (headerView[8] === 0x66 && headerView[9] === 0x74 && headerView[10] === 0x79 && headerView[11] === 0x70)
       );
 
-      await Promise.race([execPromise, execTimeout]);
-      console.log('ffmpeg: run complete');
+      if (!isMP4) {
+        console.error('File does not appear to be a valid MP4');
+        throw new Error('Downloaded file is not a valid MP4 video');
+      }
 
-      console.log('ffmpeg: readFile output.mp4');
-      const data = (await ffmpeg.readFile('output.mp4')) as Uint8Array;
-      const mp4Blob = new Blob([data.buffer as ArrayBuffer], { type: 'video/mp4' });
-
-      console.log('Generated MP4 blob size:', mp4Blob.size, 'bytes');
-
-      // Clean up FFmpeg files
-      await ffmpeg.deleteFile('input.mp4');
-      await ffmpeg.deleteFile('output.mp4');
+      toast.loading(`Downloading clip ${clip.id}...`, { id: `clip-${clip.id}` });
 
       // Trigger download
       const url = URL.createObjectURL(mp4Blob);
@@ -270,40 +108,13 @@ const Results = () => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      toast.success(`Clip ${clip.id} downloaded!`, { id: `clip-${clip.id}` });
+      toast.success(`Clip ${clip.id} downloaded successfully!`, { id: `clip-${clip.id}` });
     } catch (error) {
       console.error('Download error:', error);
-      console.log('Error recovery - vodArrayBuffer:', vodArrayBuffer ? `${vodArrayBuffer.byteLength} bytes` : 'null');
-      console.log('Error recovery - vodSourceUrl:', vodSourceUrl);
-
-      // If FFmpeg times out or fails but we have the original buffer, fall back to full video
-      if (vodArrayBuffer) {
-        console.warn('Falling back to full video download');
-        try {
-          const fallbackBlob = new Blob([vodArrayBuffer], { type: 'video/mp4' });
-          const fallbackUrl = URL.createObjectURL(fallbackBlob);
-          const a = document.createElement('a');
-          a.href = fallbackUrl;
-          a.download = `clip-${clip.id}-${clip.title.replace(/[^a-z0-9]/gi, '_')}-full.mp4`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(fallbackUrl);
-
-          toast.info('Clip processing timed out, downloaded full video instead.', { id: `clip-${clip.id}` });
-        } catch (fallbackError) {
-          console.error('Fallback download also failed:', fallbackError);
-          toast.error(
-            `Failed to download: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            { id: `clip-${clip.id}` },
-          );
-        }
-      } else {
-        toast.error(
-          `Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          { id: `clip-${clip.id}` },
-        );
-      }
+      toast.error(
+        `Failed to download clip: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        { id: `clip-${clip.id}` }
+      );
     } finally {
       setDownloadingClips((prev) => {
         const next = new Set(prev);
@@ -314,15 +125,12 @@ const Results = () => {
   };
 
   const handleDownloadAll = async () => {
-    if (!isFFmpegLoaded) {
-      toast.error('Video processor not ready yet, please wait...');
-      return;
-    }
-
     toast.info(`Processing ${clips.length} clips... This may take several minutes.`);
     
     for (const clip of clips) {
       await handleDownloadClip(clip);
+      // Add small delay between downloads
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
   };
 
@@ -345,28 +153,13 @@ const Results = () => {
               <ArrowLeft className="w-4 h-4" />
               New Generation
             </Button>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="force-server-processing"
-                  checked={useServerProcessing}
-                  onCheckedChange={(checked) => setUseServerProcessing(!!checked)}
-                />
-                <Label
-                  htmlFor="force-server-processing"
-                  className="text-xs md:text-sm text-muted-foreground"
-                >
-                  Force server-side processing
-                </Label>
-              </div>
-              <Button
-                onClick={handleDownloadAll}
-                className="gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
-              >
-                <Download className="w-4 h-4" />
-                Download All as ZIP
-              </Button>
-            </div>
+            <Button
+              onClick={handleDownloadAll}
+              className="gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
+            >
+              <Download className="w-4 h-4" />
+              Download All
+            </Button>
           </div>
         </div>
       </header>
@@ -435,21 +228,12 @@ const Results = () => {
                 </p>
                 <Button
                   onClick={() => handleDownloadClip(clip)}
-                  className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90 download-btn"
+                  className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
                   size="sm"
-                  disabled={
-                    downloadingClips.has(clip.id) ||
-                    (!isFFmpegLoaded && !useServerProcessing)
-                  }
+                  disabled={downloadingClips.has(clip.id)}
                 >
                   <Download className="w-4 h-4" />
-                  {downloadingClips.has(clip.id)
-                    ? 'Processing...'
-                    : !isFFmpegLoaded && !useServerProcessing
-                      ? 'Loading processor...'
-                      : useServerProcessing && !isFFmpegLoaded
-                        ? 'Download via server'
-                        : 'Download Clip'}
+                  {downloadingClips.has(clip.id) ? 'Processing...' : 'Download Clip'}
                 </Button>
               </div>
             </div>

@@ -1,0 +1,21 @@
+{
+  "name": "railway-ffmpeg-service",
+  "version": "1.0.0",
+  "description": "FFmpeg video clipping service for Railway deployment",
+  "type": "module",
+  "main": "railway-server.js",
+  "scripts": {
+    "start": "node railway-server.js",
+    "dev": "node --watch railway-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "fluent-ffmpeg": "^2.1.2",
+    "ffmpeg-static": "^5.2.0",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

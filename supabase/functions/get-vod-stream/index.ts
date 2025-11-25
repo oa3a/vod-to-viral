@@ -21,10 +21,13 @@ serve(async (req) => {
       );
     }
 
+    console.log('get-vod-stream: fetching stream for VOD ID:', vodId);
+
     const clientId = Deno.env.get('TWITCH_CLIENT_ID');
     const clientSecret = Deno.env.get('TWITCH_CLIENT_SECRET');
 
     if (!clientId || !clientSecret) {
+      console.error('get-vod-stream: missing Twitch credentials');
       return new Response(
         JSON.stringify({ error: 'Twitch credentials not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -32,6 +35,7 @@ serve(async (req) => {
     }
 
     // Get OAuth token
+    console.log('get-vod-stream: requesting OAuth token...');
     const tokenResponse = await fetch('https://id.twitch.tv/oauth2/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -43,6 +47,8 @@ serve(async (req) => {
     });
 
     if (!tokenResponse.ok) {
+      const tokenError = await tokenResponse.text();
+      console.error('get-vod-stream: OAuth token failed:', tokenError);
       return new Response(
         JSON.stringify({ error: 'Failed to authenticate with Twitch' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -50,8 +56,10 @@ serve(async (req) => {
     }
 
     const { access_token } = await tokenResponse.json();
+    console.log('get-vod-stream: OAuth token obtained');
 
-    // Fetch VOD metadata to get stream URL
+    // Fetch VOD metadata
+    console.log('get-vod-stream: fetching VOD metadata...');
     const vodResponse = await fetch(`https://api.twitch.tv/helix/videos?id=${vodId}`, {
       headers: {
         'Client-ID': clientId,
@@ -60,6 +68,8 @@ serve(async (req) => {
     });
 
     if (!vodResponse.ok) {
+      const vodError = await vodResponse.text();
+      console.error('get-vod-stream: VOD fetch failed:', vodError);
       return new Response(
         JSON.stringify({ error: 'Failed to fetch VOD from Twitch' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -69,6 +79,7 @@ serve(async (req) => {
     const vodData = await vodResponse.json();
 
     if (!vodData.data || vodData.data.length === 0) {
+      console.error('get-vod-stream: VOD not found');
       return new Response(
         JSON.stringify({ error: 'VOD not found' }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -77,12 +88,26 @@ serve(async (req) => {
 
     const vod = vodData.data[0];
     
-    // Return the stream URL (Twitch provides this as thumbnail_url base, we construct the m3u8)
-    // Twitch VOD URLs follow pattern: https://vod-secure.twitch.tv/_[vod_id]/[quality]/index-dvr.m3u8
+    // Twitch VOD HLS stream URL pattern
     const streamUrl = `https://vod-secure.twitch.tv/_${vodId}/chunked/index-dvr.m3u8`;
+    console.log('get-vod-stream: constructed stream URL:', streamUrl);
+
+    // Try to fetch the playlist to validate it
+    const playlistResponse = await fetch(streamUrl);
+    
+    if (!playlistResponse.ok) {
+      console.warn('get-vod-stream: playlist URL not directly accessible (may need token)');
+      // Return the URL anyway - Railway might handle authentication differently
+    } else {
+      console.log('get-vod-stream: playlist accessible');
+    }
 
     return new Response(
-      JSON.stringify({ streamUrl }),
+      JSON.stringify({ 
+        streamUrl,
+        vodTitle: vod.title,
+        vodDuration: vod.duration,
+      }),
       { 
         status: 200, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -90,7 +115,7 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('Error in get-vod-stream:', error);
+    console.error('get-vod-stream: unexpected error:', error);
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
