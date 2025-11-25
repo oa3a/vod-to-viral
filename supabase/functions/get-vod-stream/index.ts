@@ -113,6 +113,8 @@ serve(async (req) => {
         // Use the final URL after redirects
         const finalUrl = playlistCheck.url || streamUrl;
         console.log('get-vod-stream: playlist accessible, final URL:', finalUrl);
+        console.log('get-vod-stream: URL includes token=', finalUrl.includes('token='));
+        console.log('get-vod-stream: URL includes sig=', finalUrl.includes('sig='));
         
         return new Response(
           JSON.stringify({ 
@@ -128,6 +130,10 @@ serve(async (req) => {
     }
 
     // Return constructed URL even if we can't verify it
+    console.log('get-vod-stream: returning unverified URL:', streamUrl);
+    console.log('get-vod-stream: URL includes token=', streamUrl.includes('token='));
+    console.log('get-vod-stream: URL includes sig=', streamUrl.includes('sig='));
+    
     return new Response(
       JSON.stringify({ 
         streamUrl,

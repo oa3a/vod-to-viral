@@ -14,6 +14,9 @@ serve(async (req) => {
   try {
     const { vodUrl, startTime, endTime } = await req.json();
 
+    console.log("process-clip: vodUrl received:", vodUrl);
+    console.log("process-clip: startTime:", startTime, "endTime:", endTime);
+
     if (!vodUrl || startTime === undefined || endTime === undefined) {
       console.error("process-clip: missing parameters:", { vodUrl, startTime, endTime });
       return new Response(

@@ -63,51 +63,115 @@ app.post('/clip', async (req, res) => {
     // Ensure temp directory exists
     await fs.mkdir(tempDir, { recursive: true });
 
-    // Download VOD to temp file
-    console.log('Downloading VOD from:', vodUrl);
-    const vodResponse = await fetch(vodUrl);
+    // Check if vodUrl is an m3u8 playlist (HLS stream)
+    const isM3U8 = vodUrl.includes('.m3u8');
     
-    if (!vodResponse.ok) {
-      console.error('VOD download failed:', vodResponse.status, vodResponse.statusText);
-      throw new Error(`Failed to download VOD: ${vodResponse.status} ${vodResponse.statusText}`);
+    if (isM3U8) {
+      console.log('Detected m3u8 playlist, will stream directly to FFmpeg');
+      
+      // For m3u8 playlists, FFmpeg can handle the URL directly
+      // No need to download first, just pass the URL
+      console.log('Running FFmpeg with direct m3u8 URL');
+      
+      await new Promise((resolve, reject) => {
+        const ffmpegCommand = ffmpeg(vodUrl)
+          .setStartTime(startTime)
+          .setDuration(calculateDuration(startTime, endTime))
+          .inputOptions([
+            '-protocol_whitelist', 'file,http,https,tcp,tls',
+            '-headers', `Client-ID: ${process.env.TWITCH_CLIENT_ID || ''}\r\nAuthorization: Bearer ${process.env.TWITCH_APP_TOKEN || ''}\r\n`
+          ])
+          .outputOptions([
+            '-c copy',
+            '-avoid_negative_ts make_zero'
+          ])
+          .output(outputPath)
+          .on('start', (cmd) => {
+            console.log('FFmpeg command:', cmd);
+          })
+          .on('progress', (progress) => {
+            console.log('Processing:', progress.percent ? `${progress.percent.toFixed(2)}%` : 'in progress');
+          })
+          .on('end', () => {
+            console.log('FFmpeg processing complete');
+            resolve(true);
+          })
+          .on('error', (err) => {
+            console.error('FFmpeg error:', err);
+            reject(err);
+          });
+        
+        ffmpegCommand.run();
+      });
+    } else {
+      // For regular video files, download first
+      console.log('Downloading video file from:', vodUrl);
+      
+      try {
+        const vodResponse = await fetch(vodUrl, {
+          redirect: 'follow',
+          headers: {
+            'Client-ID': process.env.TWITCH_CLIENT_ID || '',
+            'Authorization': `Bearer ${process.env.TWITCH_APP_TOKEN || ''}`,
+            'Accept': 'application/vnd.twitchtv.v5+json'
+          }
+        });
+        
+        if (!vodResponse.ok) {
+          console.error('Failed to fetch Twitch VOD:', vodUrl, vodResponse.status, vodResponse.statusText);
+          return res.status(400).json({ 
+            error: 'Cannot fetch vodUrl', 
+            details: `HTTP ${vodResponse.status}: ${vodResponse.statusText}`,
+            vodUrl: vodUrl
+          });
+        }
+
+        const vodBuffer = await vodResponse.arrayBuffer();
+        await fs.writeFile(inputPath, Buffer.from(vodBuffer));
+        console.log('VOD downloaded successfully, size:', vodBuffer.byteLength, 'bytes');
+
+        // Verify downloaded file
+        const stats = await fs.stat(inputPath);
+        console.log('Input file stats:', { size: stats.size, path: inputPath });
+
+        // Run FFmpeg to trim video
+        console.log('Running FFmpeg trim:', { startTime, endTime });
+        
+        await new Promise((resolve, reject) => {
+          ffmpeg(inputPath)
+            .setStartTime(startTime)
+            .setDuration(calculateDuration(startTime, endTime))
+            .outputOptions([
+              '-c copy',
+              '-avoid_negative_ts make_zero'
+            ])
+            .output(outputPath)
+            .on('start', (cmd) => {
+              console.log('FFmpeg command:', cmd);
+            })
+            .on('progress', (progress) => {
+              console.log('Processing:', progress.percent ? `${progress.percent.toFixed(2)}%` : 'in progress');
+            })
+            .on('end', () => {
+              console.log('FFmpeg processing complete');
+              resolve(true);
+            })
+            .on('error', (err) => {
+              console.error('FFmpeg error:', err);
+              reject(err);
+            })
+            .run();
+        });
+      } catch (fetchError) {
+        console.error('Failed to fetch Twitch VOD:', vodUrl, fetchError);
+        return res.status(400).json({ 
+          error: 'Cannot fetch vodUrl', 
+          details: fetchError.message,
+          vodUrl: vodUrl
+        });
+      }
     }
 
-    const vodBuffer = await vodResponse.arrayBuffer();
-    await fs.writeFile(inputPath, Buffer.from(vodBuffer));
-    console.log('VOD downloaded successfully, size:', vodBuffer.byteLength, 'bytes');
-
-    // Verify downloaded file
-    const stats = await fs.stat(inputPath);
-    console.log('Input file stats:', { size: stats.size, path: inputPath });
-
-    // Run FFmpeg to trim video
-    console.log('Running FFmpeg trim:', { startTime, endTime });
-    
-    await new Promise((resolve, reject) => {
-      ffmpeg(inputPath)
-        .setStartTime(startTime)
-        .setDuration(calculateDuration(startTime, endTime))
-        .outputOptions([
-          '-c copy',           // Copy codec (fast, no re-encoding)
-          '-avoid_negative_ts make_zero'
-        ])
-        .output(outputPath)
-        .on('start', (cmd) => {
-          console.log('FFmpeg command:', cmd);
-        })
-        .on('progress', (progress) => {
-          console.log('Processing:', progress.percent ? `${progress.percent.toFixed(2)}%` : 'in progress');
-        })
-        .on('end', () => {
-          console.log('FFmpeg processing complete');
-          resolve(true);
-        })
-        .on('error', (err) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        })
-        .run();
-    });
 
     // Read output file
     const outputBuffer = await fs.readFile(outputPath);
