@@ -87,8 +87,8 @@ serve(async (req) => {
     const graphqlResponse = await fetch("https://gql.twitch.tv/gql", {
       method: "POST",
       headers: {
-        "Client-ID": clientId,
-        // Use standard Bearer auth; "OAuth" scheme causes 401 "Authorization token is invalid"
+        // Twitch GraphQL playback API requires the public web client ID, not your app's client id
+        "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
         Authorization: `Bearer ${access_token}`,
         "Content-Type": "application/json",
       },
