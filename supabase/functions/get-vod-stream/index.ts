@@ -88,7 +88,8 @@ serve(async (req) => {
       method: "POST",
       headers: {
         "Client-ID": clientId,
-        Authorization: `OAuth ${access_token}`,
+        // Use standard Bearer auth; "OAuth" scheme causes 401 "Authorization token is invalid"
+        Authorization: `Bearer ${access_token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(graphqlQuery),
