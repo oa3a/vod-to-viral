@@ -47,7 +47,18 @@ app.post('/clip', async (req, res) => {
       });
     }
 
-    console.log('Clip request:', { vodUrl, startTime, endTime });
+    console.log('Clip request received:', { vodUrl, startTime, endTime });
+
+    // CRITICAL: Validate vodUrl is absolute
+    if (!vodUrl.startsWith('http://') && !vodUrl.startsWith('https://')) {
+      console.error('Invalid vodUrl (not absolute):', vodUrl);
+      return res.status(400).json({ 
+        error: 'vodUrl must be an absolute URL starting with http:// or https://',
+        received: vodUrl
+      });
+    }
+
+    console.log('Validated absolute vodUrl:', vodUrl);
 
     // Ensure temp directory exists
     await fs.mkdir(tempDir, { recursive: true });
@@ -57,12 +68,17 @@ app.post('/clip', async (req, res) => {
     const vodResponse = await fetch(vodUrl);
     
     if (!vodResponse.ok) {
+      console.error('VOD download failed:', vodResponse.status, vodResponse.statusText);
       throw new Error(`Failed to download VOD: ${vodResponse.status} ${vodResponse.statusText}`);
     }
 
     const vodBuffer = await vodResponse.arrayBuffer();
     await fs.writeFile(inputPath, Buffer.from(vodBuffer));
-    console.log('VOD downloaded, size:', vodBuffer.byteLength, 'bytes');
+    console.log('VOD downloaded successfully, size:', vodBuffer.byteLength, 'bytes');
+
+    // Verify downloaded file
+    const stats = await fs.stat(inputPath);
+    console.log('Input file stats:', { size: stats.size, path: inputPath });
 
     // Run FFmpeg to trim video
     console.log('Running FFmpeg trim:', { startTime, endTime });
@@ -101,6 +117,11 @@ app.post('/clip', async (req, res) => {
       throw new Error('FFmpeg produced empty output file');
     }
 
+    // Verify MP4 header
+    const header = outputBuffer.slice(0, 12);
+    const headerHex = Array.from(header).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    console.log('Output MP4 header:', headerHex);
+
     // Clean up temp files
     await fs.unlink(inputPath).catch(err => console.warn('Failed to delete input:', err));
     await fs.unlink(outputPath).catch(err => console.warn('Failed to delete output:', err));
@@ -112,6 +133,8 @@ app.post('/clip', async (req, res) => {
       'Content-Length': outputBuffer.length
     });
     res.send(outputBuffer);
+
+    console.log('Successfully sent MP4 to client');
 
   } catch (error) {
     console.error('Clip processing error:', error);
@@ -136,7 +159,9 @@ app.post('/clip', async (req, res) => {
 function calculateDuration(startTime, endTime) {
   const start = parseTimeToSeconds(startTime);
   const end = parseTimeToSeconds(endTime);
-  return end - start;
+  const duration = end - start;
+  console.log('Calculated duration:', { start, end, duration });
+  return duration;
 }
 
 // Helper: Convert HH:MM:SS to seconds

@@ -15,14 +15,28 @@ serve(async (req) => {
     const { vodUrl, startTime, endTime } = await req.json();
 
     if (!vodUrl || startTime === undefined || endTime === undefined) {
-      console.error("Missing parameters:", { vodUrl, startTime, endTime });
+      console.error("process-clip: missing parameters:", { vodUrl, startTime, endTime });
       return new Response(
         JSON.stringify({ error: "vodUrl, startTime, and endTime are required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("process-clip: request", { vodUrl, startTime, endTime });
+    console.log("process-clip: received request:", { vodUrl, startTime, endTime });
+
+    // CRITICAL: Validate vodUrl is absolute
+    if (!vodUrl.startsWith('http://') && !vodUrl.startsWith('https://')) {
+      console.error("process-clip: vodUrl is not absolute:", vodUrl);
+      return new Response(
+        JSON.stringify({ 
+          error: "vodUrl must be an absolute URL starting with http:// or https://",
+          received: vodUrl 
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("process-clip: validated absolute URL:", vodUrl);
 
     // Convert seconds to HH:MM:SS format for Railway
     const formatTime = (seconds: number): string => {
@@ -35,9 +49,16 @@ serve(async (req) => {
     const formattedStart = typeof startTime === 'string' ? startTime : formatTime(startTime);
     const formattedEnd = typeof endTime === 'string' ? endTime : formatTime(endTime);
 
+    console.log("process-clip: formatted times:", { formattedStart, formattedEnd });
+
     // Call Railway FFmpeg service
     const railwayUrl = "https://ffmpeg-clip-service-production.up.railway.app/clip";
-    console.log("process-clip: calling Railway at", railwayUrl);
+    console.log("process-clip: calling Railway at:", railwayUrl);
+    console.log("process-clip: sending payload:", JSON.stringify({
+      vodUrl,
+      startTime: formattedStart,
+      endTime: formattedEnd,
+    }));
 
     const railwayResponse = await fetch(railwayUrl, {
       method: "POST",
@@ -51,9 +72,11 @@ serve(async (req) => {
       }),
     });
 
+    console.log("process-clip: Railway response status:", railwayResponse.status);
+
     if (!railwayResponse.ok) {
       const errorText = await railwayResponse.text().catch(() => "Unable to read error");
-      console.error("Railway service error:", railwayResponse.status, errorText);
+      console.error("process-clip: Railway service error:", railwayResponse.status, errorText);
       return new Response(
         JSON.stringify({ 
           error: "Railway FFmpeg service failed", 
@@ -69,14 +92,20 @@ serve(async (req) => {
     console.log("process-clip: received MP4 from Railway:", mp4Data.byteLength, "bytes");
 
     if (mp4Data.byteLength === 0) {
-      console.error("Railway returned empty MP4");
+      console.error("process-clip: Railway returned empty MP4");
       return new Response(
         JSON.stringify({ error: "Railway returned empty video file" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
+    // Verify MP4 header
+    const header = new Uint8Array(mp4Data.slice(0, 12));
+    const headerHex = Array.from(header).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    console.log("process-clip: MP4 header:", headerHex);
+
     // Return the MP4 directly to frontend
+    console.log("process-clip: returning MP4 to client");
     return new Response(mp4Data, {
       status: 200,
       headers: {
