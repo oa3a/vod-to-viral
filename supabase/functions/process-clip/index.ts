@@ -15,35 +15,43 @@ serve(async (req) => {
     const { vodUrl, startTime, endTime } = await req.json();
 
     if (!vodUrl || startTime == null || endTime == null) {
-      return new Response(JSON.stringify({ error: "vodUrl, startTime, endTime are required" }), {
+      return new Response(JSON.stringify({ error: "vodUrl, startTime and endTime required" }), {
         status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: corsHeaders,
       });
     }
 
-    const railwayResponse = await fetch("https://ffmpeg-clip-service-production.up.railway.app/clip", {
+    // Call Railway backend (which returns MP4)
+    const backendRes = await fetch("https://ffmpeg-clip-service-production.up.railway.app/clip", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ vodUrl, startTime, endTime }),
     });
 
-    const result = await railwayResponse.json();
-
-    if (!railwayResponse.ok) {
-      return new Response(JSON.stringify({ error: "Railway service error", details: result }), {
-        status: 502,
+    if (!backendRes.ok) {
+      const text = await backendRes.text();
+      return new Response(JSON.stringify({ error: "Railway failed", details: text }), {
+        status: 500,
         headers: corsHeaders,
       });
     }
 
-    return new Response(JSON.stringify(result), {
+    // Read MP4 binary as ArrayBuffer
+    const mp4Buffer = await backendRes.arrayBuffer();
+
+    return new Response(mp4Buffer, {
       status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "video/mp4",
+        "Content-Disposition": 'attachment; filename="clip.mp4"',
+      },
     });
   } catch (err) {
-    // SAFE ERROR HANDLING
     const message = err instanceof Error ? err.message : "Unknown error";
-
-    return new Response(JSON.stringify({ error: message }), { status: 500, headers: corsHeaders });
+    return new Response(JSON.stringify({ error: message }), {
+      status: 500,
+      headers: corsHeaders,
+    });
   }
 });
