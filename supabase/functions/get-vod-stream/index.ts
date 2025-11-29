@@ -184,8 +184,12 @@ serve(async (req) => {
     }
 
     console.log("get-vod-stream: extracted stream URL:", chunkedUrl);
-    console.log("get-vod-stream: URL includes token=", chunkedUrl.includes("token="));
-    console.log("get-vod-stream: URL includes sig=", chunkedUrl.includes("sig="));
+
+    // Rewrite the m3u8 URL to point to our rewrite proxy that converts relative paths to absolute
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const encodedUrl = encodeURIComponent(chunkedUrl);
+    const rewrittenUrl = `${supabaseUrl}/functions/v1/rewrite-m3u8?url=${encodedUrl}`;
+    console.log("get-vod-stream: rewritten URL for Railway:", rewrittenUrl);
 
     // Step 4: Fetch VOD metadata using the OAuth token we already have
     console.log("get-vod-stream: fetching VOD metadata...");
@@ -213,7 +217,7 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({
-        streamUrl: chunkedUrl,
+        streamUrl: rewrittenUrl,
         vodTitle,
         vodDuration,
       }),

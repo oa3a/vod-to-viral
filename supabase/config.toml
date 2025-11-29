@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.proxy-vod]
 verify_jwt = false
+
+[functions.rewrite-m3u8]
+verify_jwt = false
