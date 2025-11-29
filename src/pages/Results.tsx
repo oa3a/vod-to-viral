@@ -5,9 +5,6 @@ import { Download, ArrowLeft, Star, Clock, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 
-// Use Vite env for the Railway backend URL, or replace with your URL string
-const RAILWAY_BASE = import.meta.env.VITE_RAILWAY_CLIP_URL || "https://ffmpeg-clip-service-production.up.railway.app";
-
 type Clip = {
   id: number | string;
   title: string;
@@ -33,64 +30,6 @@ const Results: React.FC = () => {
     return null;
   }
 
-  // Helper that calls Railway directly to create clip and return ArrayBuffer
-  async function fetchClipFromRailway(
-    absoluteVodUrl: string,
-    startSeconds: number,
-    endSeconds: number,
-  ): Promise<ArrayBuffer> {
-    // Sanity check inputs
-    if (!absoluteVodUrl || !absoluteVodUrl.startsWith("http")) {
-      throw new Error("Invalid VOD URL");
-    }
-
-    // Build payload
-    const payload = {
-      vodUrl: absoluteVodUrl,
-      startTime: startSeconds,
-      endTime: endSeconds,
-    };
-
-    // Call Railway endpoint
-    const url = `${RAILWAY_BASE.replace(/\/$/, "")}/clip`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000); // 120s timeout (adjust as needed)
-
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-
-      if (!res.ok) {
-        // Try to read JSON or text for better error message
-        let details = "";
-        try {
-          const txt = await res.text();
-          details = txt;
-        } catch (e) {
-          details = `HTTP ${res.status}`;
-        }
-        throw new Error(`Clip service error: ${details}`);
-      }
-
-      // Return binary ArrayBuffer
-      const ab = await res.arrayBuffer();
-      return ab;
-    } catch (err) {
-      clearTimeout(timeout);
-      // Normalize error
-      if (err instanceof Error) throw err;
-      throw new Error("Network or unknown error while contacting clip service");
-    }
-  }
-
   const handleDownloadClip = async (clip: Clip) => {
     if (downloadingClips.has(clip.id)) {
       toast.info("This clip is already being processed");
@@ -108,32 +47,54 @@ const Results: React.FC = () => {
     toast.loading(`Processing clip ${clip.id}...`, { id: `clip-${clip.id}` });
 
     try {
-      // Resolve absolute VOD URL to pass to Railway.
-      // If vodData.streamUrl exists, prefer it. Otherwise try vodUrl (may fail in some Twitch flows).
-      let absoluteVodUrl = (vodData as any)?.streamUrl ?? vodUrl;
+      // 1) Ensure we have the final absolute Twitch playlist URL
+      let streamUrl: string | undefined = (vodData as any)?.streamUrl;
 
-      // If we still lack a usable absolute URL, ask backend (supabase) for one:
-      if (!absoluteVodUrl || !absoluteVodUrl.startsWith("http")) {
+      if (!streamUrl || !streamUrl.startsWith("http")) {
         const { data: streamData, error: streamError } = await supabase.functions.invoke("get-vod-stream", {
           body: { vodId: (vodData as any)?.vodId },
         });
-        if (streamError || !streamData?.streamUrl) {
-          throw new Error(streamError?.message ?? "Failed to resolve VOD stream URL");
+
+        if (streamError) {
+          throw new Error((streamError as any).message ?? "Failed to resolve Twitch VOD stream URL");
         }
-        absoluteVodUrl = streamData.streamUrl;
+
+        if (!streamData?.streamUrl || typeof (streamData as any).streamUrl !== "string") {
+          throw new Error("Backend did not return a valid stream URL");
+        }
+
+        streamUrl = (streamData as any).streamUrl as string;
+        (vodData as any).streamUrl = streamUrl; // cache for subsequent clips
       }
 
-      // Final absolute check
-      if (!absoluteVodUrl.startsWith("http://") && !absoluteVodUrl.startsWith("https://")) {
+      if (!streamUrl.startsWith("http://") && !streamUrl.startsWith("https://")) {
         throw new Error("Resolved VOD URL is not a valid absolute URL");
       }
 
-      // Call Railway directly and get ArrayBuffer
-      const arr = await fetchClipFromRailway(absoluteVodUrl, clip.startTime, clip.endTime);
+      // 2) Call process-clip edge function (which forwards to Railway) and expect binary
+      const functionsClient: any = supabase.functions as any;
+      const { data, error } = await functionsClient.invoke("process-clip", {
+        body: {
+          vodUrl: streamUrl,
+          startTime: clip.startTime,
+          endTime: clip.endTime,
+        },
+        responseType: "arraybuffer",
+      });
+
+      if (error) {
+        throw new Error((error as any).message || "Clip processing backend error");
+      }
+
+      if (!data) {
+        throw new Error("Received empty response from clip backend");
+      }
+
+      const arr = data as ArrayBuffer;
 
       // Validate bytes > 0
       if (!arr || arr.byteLength === 0) {
-        throw new Error("Received empty file from clip service");
+        throw new Error("Received empty file from clip backend");
       }
 
       // Simple MP4 header check (ftyp)
@@ -143,7 +104,6 @@ const Results: React.FC = () => {
         (header[8] === 0x66 && header[9] === 0x74 && header[10] === 0x79 && header[11] === 0x70);
 
       if (!looksLikeMp4) {
-        // Try to decode server error bodies that might be JSON/text disguised as arrayBuffer
         let text = "";
         try {
           text = new TextDecoder().decode(arr);
@@ -158,7 +118,6 @@ const Results: React.FC = () => {
       const url = URL.createObjectURL(mp4Blob);
       const a = document.createElement("a");
       a.href = url;
-      // sanitize title for filename
       const safeTitle = (clip.title || "clip").replace(/[^a-z0-9_\-]/gi, "_").slice(0, 120);
       a.download = `clip-${clip.id}-${safeTitle}.mp4`;
       document.body.appendChild(a);
@@ -184,8 +143,6 @@ const Results: React.FC = () => {
   const handleDownloadAll = async () => {
     toast.info(`Processing ${clips.length} clips...`);
     for (const clip of clips) {
-      // wait sequentially to reduce concurrent load on your Railway service
-      // If you want parallel downloads, you may spawn promises instead.
       await handleDownloadClip(clip);
       await new Promise((r) => setTimeout(r, 800));
     }
