@@ -17,7 +17,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Set FFmpeg path
-ffmpeg.setFfmpegPath(ffmpegStatic);
+ffmpeg.setFfmpegPath(ffmpegStatic as string);
 
 // Middleware
 app.use(cors());
@@ -41,16 +41,16 @@ app.post('/clip', async (req, res) => {
   try {
     const { vodUrl, startTime, endTime } = req.body;
 
-    if (!vodUrl || !startTime || !endTime) {
+    if (!vodUrl || startTime == null || endTime == null) {
       return res.status(400).json({ 
         error: 'Missing required fields: vodUrl, startTime, endTime' 
       });
     }
 
-    console.log('Clip request received:', { vodUrl, startTime, endTime });
+    console.log('Railway: received vodUrl clip request', { vodUrl, startTime, endTime });
 
     // CRITICAL: Validate vodUrl is absolute
-    if (!vodUrl.startsWith('http://') && !vodUrl.startsWith('https://')) {
+    if (typeof vodUrl !== 'string' || (!vodUrl.startsWith('http://') && !vodUrl.startsWith('https://'))) {
       console.error('Invalid vodUrl (not absolute):', vodUrl);
       return res.status(400).json({ 
         error: 'vodUrl must be an absolute URL starting with http:// or https://',
@@ -68,22 +68,18 @@ app.post('/clip', async (req, res) => {
     
     if (isM3U8) {
       console.log('Detected m3u8 playlist, will stream directly to FFmpeg');
-      
-      // For m3u8 playlists, FFmpeg can handle the URL directly
-      // No need to download first, just pass the URL
       console.log('Running FFmpeg with direct m3u8 URL');
       
-      await new Promise((resolve, reject) => {
-        const ffmpegCommand = ffmpeg(vodUrl)
+      await new Promise<void>((resolve, reject) => {
+        const command = ffmpeg(vodUrl)
           .setStartTime(startTime)
           .setDuration(calculateDuration(startTime, endTime))
           .inputOptions([
-            '-protocol_whitelist', 'file,http,https,tcp,tls',
-            '-headers', `Client-ID: ${process.env.TWITCH_CLIENT_ID || ''}\r\nAuthorization: Bearer ${process.env.TWITCH_APP_TOKEN || ''}\r\n`
+            '-protocol_whitelist', 'file,http,https,tcp,tls'
           ])
           .outputOptions([
             '-c copy',
-            '-avoid_negative_ts make_zero'
+            '-avoid_negative_ts', 'make_zero'
           ])
           .output(outputPath)
           .on('start', (cmd) => {
@@ -94,14 +90,14 @@ app.post('/clip', async (req, res) => {
           })
           .on('end', () => {
             console.log('FFmpeg processing complete');
-            resolve(true);
+            resolve();
           })
           .on('error', (err) => {
             console.error('FFmpeg error:', err);
             reject(err);
           });
         
-        ffmpegCommand.run();
+        command.run();
       });
     } else {
       // For regular video files, download first
@@ -109,20 +105,15 @@ app.post('/clip', async (req, res) => {
       
       try {
         const vodResponse = await fetch(vodUrl, {
-          redirect: 'follow',
-          headers: {
-            'Client-ID': process.env.TWITCH_CLIENT_ID || '',
-            'Authorization': `Bearer ${process.env.TWITCH_APP_TOKEN || ''}`,
-            'Accept': 'application/vnd.twitchtv.v5+json'
-          }
+          redirect: 'follow'
         });
         
         if (!vodResponse.ok) {
-          console.error('Failed to fetch Twitch VOD:', vodUrl, vodResponse.status, vodResponse.statusText);
+          console.error('Failed to fetch VOD:', vodUrl, vodResponse.status, vodResponse.statusText);
           return res.status(400).json({ 
             error: 'Cannot fetch vodUrl', 
             details: `HTTP ${vodResponse.status}: ${vodResponse.statusText}`,
-            vodUrl: vodUrl
+            vodUrl
           });
         }
 
@@ -137,13 +128,13 @@ app.post('/clip', async (req, res) => {
         // Run FFmpeg to trim video
         console.log('Running FFmpeg trim:', { startTime, endTime });
         
-        await new Promise((resolve, reject) => {
+        await new Promise<void>((resolve, reject) => {
           ffmpeg(inputPath)
             .setStartTime(startTime)
             .setDuration(calculateDuration(startTime, endTime))
             .outputOptions([
               '-c copy',
-              '-avoid_negative_ts make_zero'
+              '-avoid_negative_ts', 'make_zero'
             ])
             .output(outputPath)
             .on('start', (cmd) => {
@@ -154,7 +145,7 @@ app.post('/clip', async (req, res) => {
             })
             .on('end', () => {
               console.log('FFmpeg processing complete');
-              resolve(true);
+              resolve();
             })
             .on('error', (err) => {
               console.error('FFmpeg error:', err);
@@ -162,16 +153,15 @@ app.post('/clip', async (req, res) => {
             })
             .run();
         });
-      } catch (fetchError) {
-        console.error('Failed to fetch Twitch VOD:', vodUrl, fetchError);
+      } catch (fetchError: any) {
+        console.error('Failed to fetch VOD:', vodUrl, fetchError);
         return res.status(400).json({ 
           error: 'Cannot fetch vodUrl', 
           details: fetchError.message,
-          vodUrl: vodUrl
+          vodUrl
         });
       }
     }
-
 
     // Read output file
     const outputBuffer = await fs.readFile(outputPath);
@@ -200,7 +190,7 @@ app.post('/clip', async (req, res) => {
 
     console.log('Successfully sent MP4 to client');
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Clip processing error:', error);
     
     // Clean up on error
@@ -214,13 +204,13 @@ app.post('/clip', async (req, res) => {
     res.status(500).json({ 
       error: 'Failed to process clip',
       message: error.message,
-      type: error.constructor.name
+      type: error.constructor?.name ?? 'Error'
     });
   }
 });
 
 // Helper: Calculate duration from start and end time
-function calculateDuration(startTime, endTime) {
+function calculateDuration(startTime: any, endTime: any) {
   const start = parseTimeToSeconds(startTime);
   const end = parseTimeToSeconds(endTime);
   const duration = end - start;
@@ -228,9 +218,15 @@ function calculateDuration(startTime, endTime) {
   return duration;
 }
 
-// Helper: Convert HH:MM:SS to seconds
-function parseTimeToSeconds(timeStr) {
-  const parts = timeStr.split(':').map(Number);
+// Helper: Convert HH:MM:SS or seconds to seconds
+function parseTimeToSeconds(time: any) {
+  if (typeof time === 'number' && Number.isFinite(time)) {
+    return time;
+  }
+
+  const str = String(time);
+  const parts = str.split(':').map(Number);
+
   if (parts.length === 3) {
     return parts[0] * 3600 + parts[1] * 60 + parts[2];
   } else if (parts.length === 2) {
@@ -240,7 +236,17 @@ function parseTimeToSeconds(timeStr) {
   }
 }
 
+async function logYtDlpVersion() {
+  try {
+    const { stdout } = await execAsync('yt-dlp --version');
+    console.log('yt-dlp available, version:', stdout.trim());
+  } catch (err: any) {
+    console.warn('yt-dlp not found in PATH. Some sources may not work.', err?.message ?? err);
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`Railway FFmpeg Service listening on port ${PORT}`);
   console.log(`FFmpeg path: ${ffmpegStatic}`);
+  logYtDlpVersion().catch(() => {});
 });
