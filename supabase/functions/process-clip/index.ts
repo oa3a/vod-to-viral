@@ -83,14 +83,19 @@ serve(async (req) => {
     const normalizedStart = normalizeTime(startTime, "startTime");
     const normalizedEnd = normalizeTime(endTime, "endTime");
 
-    const base = Deno.env.get("FFMPEG_SERVICE_URL") ||
+    let base = Deno.env.get("FFMPEG_SERVICE_URL")?.trim() || 
       "https://ffmpeg-clip-service-production.up.railway.app";
 
-    let backendUrl = base.trim();
-    if (!backendUrl.endsWith("/clip")) {
-      backendUrl = backendUrl.replace(/\/$/, "");
-      backendUrl = `${backendUrl}/clip`;
+    // Auto-add https:// if missing
+    if (!base.startsWith("http://") && !base.startsWith("https://")) {
+      base = "https://" + base;
     }
+
+    // Remove trailing slash (if exists)
+    base = base.replace(/\/$/, "");
+
+    // Ensure it ends with /clip
+    const backendUrl = base.endsWith("/clip") ? base : base + "/clip";
 
     console.log("process-clip: forwarding to Railway", {
       backendUrl,
