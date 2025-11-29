@@ -29,25 +29,47 @@ const Progress = () => {
 
     const fetchVodData = async () => {
       try {
-        const { data, error } = await supabase.functions.invoke('fetch-twitch-vod', {
-          body: { vodUrl }
+        const { data, error } = await supabase.functions.invoke("fetch-twitch-vod", {
+          body: { vodUrl },
         });
 
         if (error) throw error;
 
-        if (data.error) {
+        if (data?.error) {
           setError(data.error);
           toast.error(`Failed to fetch VOD: ${data.error}`);
           setTimeout(() => navigate("/"), 3000);
           return;
         }
 
-        setVodData(data);
-        console.log('VOD Data:', data);
+        // Once we have the VOD metadata, fetch the actual stream URL used for clipping
+        const { data: streamData, error: streamError } = await supabase.functions.invoke("get-vod-stream", {
+          body: { vodId: data.vodId },
+        });
+
+        if (streamError) throw streamError;
+
+        if (streamData?.error) {
+          setError(streamData.error);
+          toast.error(`Failed to resolve VOD stream: ${streamData.error}`);
+          setTimeout(() => navigate("/"), 3000);
+          return;
+        }
+
+        const combinedVodData = {
+          ...data,
+          streamUrl: streamData.streamUrl,
+          // keep original values as fallbacks
+          title: data.title ?? streamData.vodTitle,
+          duration: data.duration ?? streamData.vodDuration,
+        };
+
+        setVodData(combinedVodData);
+        console.log("VOD Data with stream URL:", combinedVodData);
       } catch (err) {
-        console.error('Error fetching VOD:', err);
-        setError(err instanceof Error ? err.message : 'Failed to fetch VOD');
-        toast.error('Failed to fetch VOD from Twitch');
+        console.error("Error fetching VOD:", err);
+        setError(err instanceof Error ? err.message : "Failed to fetch VOD");
+        toast.error("Failed to fetch VOD from Twitch");
         setTimeout(() => navigate("/"), 3000);
       }
     };
