@@ -21,7 +21,6 @@ serve(async (req) => {
       });
     }
 
-    // Forward job to Railway FFmpeg service
     const railwayResponse = await fetch("https://ffmpeg-clip-service-production.up.railway.app/clip", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -37,17 +36,14 @@ serve(async (req) => {
       });
     }
 
-    // IMPORTANT:
-    // Railway returns: { jobId }
-    // DO NOT stream video through Supabase.
     return new Response(JSON.stringify(result), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message ?? "Unknown error" }), {
-      status: 500,
-      headers: corsHeaders,
-    });
+    // SAFE ERROR HANDLING
+    const message = err instanceof Error ? err.message : "Unknown error";
+
+    return new Response(JSON.stringify({ error: message }), { status: 500, headers: corsHeaders });
   }
 });
