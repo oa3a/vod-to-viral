@@ -1,78 +1,178 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Download, ArrowLeft, Star, Clock, TrendingUp } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
-const Results = () => {
+// Use Vite env for the Railway backend URL, or replace with your URL string
+const RAILWAY_BASE = import.meta.env.VITE_RAILWAY_CLIP_URL || "https://ffmpeg-clip-service-production.up.railway.app";
+
+type Clip = {
+  id: number | string;
+  title: string;
+  startTime: number; // seconds
+  endTime: number; // seconds
+  formattedTime?: string;
+  duration?: number;
+  viralScore?: number | string;
+};
+
+const Results: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const vodUrl = location.state?.vodUrl;
-  const vodData = location.state?.vodData;
+  const vodUrl = (location.state as any)?.vodUrl;
+  const vodData = (location.state as any)?.vodData;
+  const clips: Clip[] = vodData?.clips ?? [];
 
-  const clips = vodData?.clips || [];
-  const [downloadingClips, setDownloadingClips] = useState<Set<number>>(new Set());
+  const [downloadingClips, setDownloadingClips] = useState<Set<string | number>>(new Set());
 
-  // -------------------------------
-  // DIRECT fetch() to Supabase Edge Function
-  // -------------------------------
-  const callProcessClip = async (vodUrl: string, start: number, end: number) => {
-    const edgeUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-clip`;
+  if (!vodUrl || !vodData) {
+    // If user refreshed invalid state, go home
+    navigate("/");
+    return null;
+  }
 
-    const res = await fetch(edgeUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify({ vodUrl, startTime: start, endTime: end }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Edge function failed: ${text}`);
+  // Helper that calls Railway directly to create clip and return ArrayBuffer
+  async function fetchClipFromRailway(
+    absoluteVodUrl: string,
+    startSeconds: number,
+    endSeconds: number,
+  ): Promise<ArrayBuffer> {
+    // Sanity check inputs
+    if (!absoluteVodUrl || !absoluteVodUrl.startsWith("http")) {
+      throw new Error("Invalid VOD URL");
     }
 
-    const arrayBuffer = await res.arrayBuffer();
-    return new Blob([arrayBuffer], { type: "video/mp4" });
-  };
+    // Build payload
+    const payload = {
+      vodUrl: absoluteVodUrl,
+      startTime: startSeconds,
+      endTime: endSeconds,
+    };
 
-  // -------------------------------
-  // DOWNLOAD A SINGLE CLIP
-  // -------------------------------
-  const handleDownloadClip = async (clip: any) => {
+    // Call Railway endpoint
+    const url = `${RAILWAY_BASE.replace(/\/$/, "")}/clip`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000); // 120s timeout (adjust as needed)
+
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        // Try to read JSON or text for better error message
+        let details = "";
+        try {
+          const txt = await res.text();
+          details = txt;
+        } catch (e) {
+          details = `HTTP ${res.status}`;
+        }
+        throw new Error(`Clip service error: ${details}`);
+      }
+
+      // Return binary ArrayBuffer
+      const ab = await res.arrayBuffer();
+      return ab;
+    } catch (err) {
+      clearTimeout(timeout);
+      // Normalize error
+      if (err instanceof Error) throw err;
+      throw new Error("Network or unknown error while contacting clip service");
+    }
+  }
+
+  const handleDownloadClip = async (clip: Clip) => {
     if (downloadingClips.has(clip.id)) {
-      toast.info("Already processing this clip");
+      toast.info("This clip is already being processed");
       return;
     }
 
-    setDownloadingClips(new Set(downloadingClips).add(clip.id));
+    // Mark as downloading
+    setDownloadingClips((prev) => {
+      const next = new Set(prev);
+      next.add(clip.id);
+      return next;
+    });
+
+    // Show loading toast
     toast.loading(`Processing clip ${clip.id}...`, { id: `clip-${clip.id}` });
 
     try {
-      const absoluteVodUrl = vodData.streamUrl || vodData.directUrl || vodUrl;
+      // Resolve absolute VOD URL to pass to Railway.
+      // If vodData.streamUrl exists, prefer it. Otherwise try vodUrl (may fail in some Twitch flows).
+      let absoluteVodUrl = (vodData as any)?.streamUrl ?? vodUrl;
 
-      const mp4Blob = await callProcessClip(absoluteVodUrl, clip.startTime, clip.endTime);
-
-      if (mp4Blob.size === 0) {
-        throw new Error("Received empty video file");
+      // If we still lack a usable absolute URL, ask backend (supabase) for one:
+      if (!absoluteVodUrl || !absoluteVodUrl.startsWith("http")) {
+        const { data: streamData, error: streamError } = await supabase.functions.invoke("get-vod-stream", {
+          body: { vodId: (vodData as any)?.vodId },
+        });
+        if (streamError || !streamData?.streamUrl) {
+          throw new Error(streamError?.message ?? "Failed to resolve VOD stream URL");
+        }
+        absoluteVodUrl = streamData.streamUrl;
       }
 
-      // Download file
+      // Final absolute check
+      if (!absoluteVodUrl.startsWith("http://") && !absoluteVodUrl.startsWith("https://")) {
+        throw new Error("Resolved VOD URL is not a valid absolute URL");
+      }
+
+      // Call Railway directly and get ArrayBuffer
+      const arr = await fetchClipFromRailway(absoluteVodUrl, clip.startTime, clip.endTime);
+
+      // Validate bytes > 0
+      if (!arr || arr.byteLength === 0) {
+        throw new Error("Received empty file from clip service");
+      }
+
+      // Simple MP4 header check (ftyp)
+      const header = new Uint8Array(arr.slice(0, 12));
+      const looksLikeMp4 =
+        (header[4] === 0x66 && header[5] === 0x74 && header[6] === 0x79 && header[7] === 0x70) ||
+        (header[8] === 0x66 && header[9] === 0x74 && header[10] === 0x79 && header[11] === 0x70);
+
+      if (!looksLikeMp4) {
+        // Try to decode server error bodies that might be JSON/text disguised as arrayBuffer
+        let text = "";
+        try {
+          text = new TextDecoder().decode(arr);
+        } catch (e) {
+          text = "";
+        }
+        throw new Error(text || "Downloaded file is not a valid MP4");
+      }
+
+      // Create blob and trigger download
+      const mp4Blob = new Blob([arr], { type: "video/mp4" });
       const url = URL.createObjectURL(mp4Blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `clip-${clip.id}.mp4`;
+      // sanitize title for filename
+      const safeTitle = (clip.title || "clip").replace(/[^a-z0-9_\-]/gi, "_").slice(0, 120);
+      a.download = `clip-${clip.id}-${safeTitle}.mp4`;
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
+      a.remove();
       URL.revokeObjectURL(url);
 
-      toast.success(`Clip ${clip.id} downloaded!`, { id: `clip-${clip.id}` });
-    } catch (e: any) {
-      toast.error(`Failed: ${e.message}`, { id: `clip-${clip.id}` });
-      console.error("Clip download failed:", e);
+      toast.success(`Clip ${clip.id} downloaded`, { id: `clip-${clip.id}` });
+    } catch (err) {
+      console.error("Download error:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Failed to download clip: ${message}`, { id: `clip-${clip.id}` });
     } finally {
+      // Remove from downloading set
       setDownloadingClips((prev) => {
         const next = new Set(prev);
         next.delete(clip.id);
@@ -82,20 +182,18 @@ const Results = () => {
   };
 
   const handleDownloadAll = async () => {
-    toast.info("Downloading all clips...");
+    toast.info(`Processing ${clips.length} clips...`);
     for (const clip of clips) {
+      // wait sequentially to reduce concurrent load on your Railway service
+      // If you want parallel downloads, you may spawn promises instead.
       await handleDownloadClip(clip);
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 800));
     }
   };
 
-  if (!vodUrl || !vodData) {
-    navigate("/");
-    return null;
-  }
-
   return (
     <div className="min-h-screen bg-background">
+      {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between gap-4">
@@ -103,7 +201,10 @@ const Results = () => {
               <ArrowLeft className="w-4 h-4" />
               New Generation
             </Button>
-            <Button onClick={handleDownloadAll} className="gap-2 bg-gradient-to-r from-primary to-secondary">
+            <Button
+              onClick={handleDownloadAll}
+              className="gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
+            >
               <Download className="w-4 h-4" />
               Download All
             </Button>
@@ -111,41 +212,56 @@ const Results = () => {
         </div>
       </header>
 
+      {/* Main Content */}
       <div className="container mx-auto px-4 py-12">
-        <div className="text-center mb-12">
+        {/* Success Message */}
+        <div className="text-center mb-12 animate-fade-in">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-success/10 border border-success/20 mb-4">
             <TrendingUp className="w-4 h-4 text-success" />
             <span className="text-sm font-medium text-success">Generation Complete</span>
           </div>
-
-          <h1 className="text-4xl md:text-5xl font-bold mb-3">{clips.length} Viral Clips Ready</h1>
-
-          <p className="text-lg text-muted-foreground">{vodData.title}</p>
+          <h1 className="text-4xl md:text-5xl font-bold mb-3 text-foreground">{clips.length} Viral Clips Ready</h1>
+          <p className="text-lg text-muted-foreground mb-2">{vodData.title}</p>
+          <p className="text-sm text-muted-foreground">
+            Duration: {vodData.duration} • {vodData.userName}
+          </p>
         </div>
 
+        {/* Clips Grid */}
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-7xl mx-auto">
           {clips.map((clip, index) => (
-            <div key={clip.id} className="bg-card border border-border rounded-xl overflow-hidden">
-              <div className="relative aspect-[9/16] bg-muted">
-                <img src={vodData.thumbnail} className="object-cover w-full h-full" />
-                <div className="absolute top-3 left-3 bg-primary/20 px-2 py-1 rounded-md flex items-center gap-1">
-                  <Star className="w-3 h-3 text-primary" />
-                  <span className="text-xs font-bold text-primary">{clip.viralScore}</span>
+            <div
+              key={clip.id}
+              className="bg-card border border-border rounded-xl overflow-hidden hover:border-primary/50 transition-all group animate-fade-in"
+              style={{ animationDelay: `${index * 0.06}s` }}
+            >
+              <div className="relative aspect-[9/16] overflow-hidden bg-muted">
+                {/* Thumbnail fallback */}
+                <div className="w-full h-full bg-gradient-to-b from-background to-muted" />
+                <div className="absolute top-3 right-3 px-2 py-1 rounded-md bg-background/80 backdrop-blur-sm flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-foreground" />
+                  <span className="text-xs font-medium text-foreground">{clip.formattedTime}</span>
                 </div>
-                <div className="absolute top-3 right-3 px-2 py-1 rounded-md bg-background/80 backdrop-blur-sm">
-                  <Clock className="w-3 h-3" />
-                  <span className="text-xs font-medium">{clip.formattedTime}</span>
+                <div className="absolute top-3 left-3 px-2 py-1 rounded-md bg-primary/20 backdrop-blur-sm border border-primary/30 flex items-center gap-1">
+                  <Star className="w-3 h-3 text-primary fill-primary" />
+                  <span className="text-xs font-bold text-primary">{clip.viralScore ?? "—"}</span>
+                </div>
+                <div className="absolute bottom-3 left-3 px-2 py-1 rounded-md bg-background/90 backdrop-blur-sm">
+                  <span className="text-xs font-bold text-foreground">{clip.duration}s</span>
                 </div>
               </div>
 
               <div className="p-4">
-                <h3 className="font-semibold mb-1">{clip.title}</h3>
-                <p className="text-xs text-muted-foreground mb-3">{clip.duration}s</p>
+                <h3 className="font-semibold text-foreground mb-1 line-clamp-1">{clip.title}</h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  {clip.formattedTime} • {clip.duration} seconds
+                </p>
 
                 <Button
                   onClick={() => handleDownloadClip(clip)}
+                  className="w-full gap-2 bg-gradient-to-r from-primary to-secondary hover:opacity-90"
+                  size="sm"
                   disabled={downloadingClips.has(clip.id)}
-                  className="w-full gap-2 bg-gradient-to-r from-primary to-secondary"
                 >
                   <Download className="w-4 h-4" />
                   {downloadingClips.has(clip.id) ? "Processing..." : "Download Clip"}
