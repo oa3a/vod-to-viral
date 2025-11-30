@@ -21,7 +21,7 @@ serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => null);
-    const vodId = body?.vodId || null;
+    const vodId = (body as any)?.vodId as string | undefined;
 
     if (!vodId || typeof vodId !== "string") {
       console.error("get-vod-stream: missing or invalid vodId");
@@ -60,8 +60,8 @@ serve(async (req) => {
       console.error("get-vod-stream: failed to obtain oauth token:", oauthRes.status, text);
       return jsonResponse({ error: "Failed to get OAuth token from Twitch" }, 500);
     }
-    const oauthJson = await oauthRes.json().catch(() => null);
-    const access_token = oauthJson?.access_token;
+    const oauthJson = await oauthRes.json().catch(() => null as any);
+    const access_token = oauthJson?.access_token as string | undefined;
     if (!access_token) {
       console.error("get-vod-stream: oauth response missing access_token", oauthJson);
       return jsonResponse({ error: "Invalid OAuth response" }, 500);
@@ -69,7 +69,7 @@ serve(async (req) => {
 
     console.log("get-vod-stream: OAuth token obtained");
 
-    // Step 2: Get playback access token using Twitch GraphQL (official playback flow)
+    // Step 2: Get playback access token using Twitch GraphQL
     console.log("get-vod-stream: requesting playback access token via GraphQL...");
     const graphqlQuery = {
       operationName: "PlaybackAccessToken",
@@ -83,7 +83,7 @@ serve(async (req) => {
       extensions: {
         persistedQuery: {
           version: 1,
-          // This is the public persistedQuery hash used by Twitch web client
+          // public persistedQuery hash used by Twitch web client
           sha256Hash: "0828119ded1c13477966434e15800ff57ddacf13ba1911c129dc2200705b0712",
         },
       },
@@ -105,7 +105,7 @@ serve(async (req) => {
       return jsonResponse({ error: "Failed to get playback access token from Twitch" }, 500);
     }
 
-    const gqlJson = await gqlRes.json().catch(() => null);
+    const gqlJson = await gqlRes.json().catch(() => null as any);
     const tokenData = gqlJson?.data?.videoPlaybackAccessToken;
     if (!tokenData || !tokenData.value || !tokenData.signature) {
       console.error("get-vod-stream: invalid GraphQL data:", gqlJson);
@@ -115,11 +115,11 @@ serve(async (req) => {
     console.log("get-vod-stream: playback access token obtained");
 
     // Step 3: Fetch the master playlist from Usher with signed token/sig
-    const token = encodeURIComponent(tokenData.value);
-    const sig = tokenData.signature;
+    const token = encodeURIComponent(tokenData.value as string);
+    const sig = tokenData.signature as string;
     const usherUrl = `https://usher.ttvnw.net/vod/${vodId}.m3u8?nauth=${token}&nauthsig=${sig}&allow_source=true&player=twitchweb`;
 
-    console.log("get-vod-stream: fetching master playlist from Usher...");
+    console.log("get-vod-stream: fetching master playlist from Usher...", usherUrl);
     const playlistRes = await fetch(usherUrl, {
       headers: {
         "Client-ID": clientId,
@@ -170,7 +170,7 @@ serve(async (req) => {
 
     console.log("get-vod-stream: extracted chunked URL:", chunkedUrl);
 
-    // CRITICAL: Validate that chunkedUrl is absolute
+    // Validate that chunkedUrl is absolute
     if (!chunkedUrl.startsWith("http://") && !chunkedUrl.startsWith("https://")) {
       console.error("get-vod-stream: chunked URL is not absolute:", chunkedUrl);
       return jsonResponse({ error: "Extracted stream URL is not absolute" }, 500);
@@ -194,10 +194,10 @@ serve(async (req) => {
         },
       });
       if (metaRes.ok) {
-        const metaJson = await metaRes.json().catch(() => null);
+        const metaJson = await metaRes.json().catch(() => null as any);
         if (metaJson?.data?.length) {
-          vodTitle = metaJson.data[0].title ?? vodTitle;
-          vodDuration = metaJson.data[0].duration ?? vodDuration;
+          vodTitle = (metaJson.data[0].title as string) ?? vodTitle;
+          vodDuration = (metaJson.data[0].duration as string) ?? vodDuration;
         }
       } else {
         console.warn("get-vod-stream: helix metadata fetch returned", metaRes.status);
@@ -213,7 +213,7 @@ serve(async (req) => {
         vodTitle,
         vodDuration,
       },
-      200
+      200,
     );
   } catch (err) {
     console.error("get-vod-stream: unexpected error:", err);

@@ -45,22 +45,22 @@ serve(async (req) => {
 
     const lines = text.split("\n");
     let rewrittenCount = 0;
-    
+
     const out = lines
       .map((line) => {
         const t = line.trim();
-        
+
         // Keep empty lines and comments as-is
         if (!t || t.startsWith("#")) {
           return line;
         }
-        
+
         // If already absolute, keep as-is
         if (t.startsWith("http://") || t.startsWith("https://")) {
           return line;
         }
-        
-        // CRITICAL: Convert relative path to absolute
+
+        // Convert any relative path to absolute URL
         const absoluteUrl = base + t;
         rewrittenCount++;
         console.log(`rewrite-m3u8: rewriting "${t}" -> "${absoluteUrl}"`);
