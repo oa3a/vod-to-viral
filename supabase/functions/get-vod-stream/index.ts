@@ -1,3 +1,4 @@
+// get-vod-stream/index.ts
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
@@ -6,45 +7,44 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+function jsonResponse(obj: unknown, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { vodId } = await req.json();
+    const body = await req.json().catch(() => null);
+    const vodId = body?.vodId || null;
 
-    if (!vodId) {
-      return new Response(JSON.stringify({ error: "VOD ID is required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!vodId || typeof vodId !== "string") {
+      return jsonResponse({ error: "VOD ID is required" }, 400);
     }
 
     console.log("get-vod-stream: fetching stream for VOD ID:", vodId);
 
     const clientId = Deno.env.get("TWITCH_CLIENT_ID");
-
-    if (!clientId) {
-      console.error("get-vod-stream: missing Twitch client ID");
-      return new Response(JSON.stringify({ error: "Twitch credentials not configured" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Step 1: Get OAuth token for Twitch API
     const clientSecret = Deno.env.get("TWITCH_CLIENT_SECRET");
-    if (!clientSecret) {
-      console.error("get-vod-stream: missing Twitch client secret");
-      return new Response(JSON.stringify({ error: "Twitch credentials not configured" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+
+    if (!clientId || !clientSecret) {
+      console.error("get-vod-stream: missing Twitch credentials");
+      return jsonResponse({ error: "Twitch credentials not configured" }, 500);
+    }
+    if (!supabaseUrl || !supabaseUrl.startsWith("http")) {
+      console.error("get-vod-stream: SUPABASE_URL missing or invalid:", supabaseUrl);
+      return jsonResponse({ error: "SUPABASE_URL is not configured" }, 500);
     }
 
-    console.log("get-vod-stream: fetching OAuth token...");
-    const oauthResponse = await fetch("https://id.twitch.tv/oauth2/token", {
+    // Step 1: Get OAuth token (client credentials)
+    console.log("get-vod-stream: requesting OAuth token...");
+    const oauthRes = await fetch("https://id.twitch.tv/oauth2/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -54,19 +54,20 @@ serve(async (req) => {
       }),
     });
 
-    if (!oauthResponse.ok) {
-      const oauthError = await oauthResponse.text();
-      console.error("get-vod-stream: OAuth token fetch failed:", oauthError);
-      return new Response(JSON.stringify({ error: "Failed to get OAuth token from Twitch" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!oauthRes.ok) {
+      const text = await oauthRes.text().catch(() => "");
+      console.error("get-vod-stream: failed to obtain oauth token:", oauthRes.status, text);
+      return jsonResponse({ error: "Failed to get OAuth token from Twitch" }, 500);
+    }
+    const oauthJson = await oauthRes.json().catch(() => null);
+    const access_token = oauthJson?.access_token;
+    if (!access_token) {
+      console.error("get-vod-stream: oauth response missing access_token", oauthJson);
+      return jsonResponse({ error: "Invalid OAuth response" }, 500);
     }
 
-    const { access_token } = await oauthResponse.json();
-
-    // Step 2: Use GraphQL API to get playback access token (official method)
-    console.log("get-vod-stream: fetching playback access token via GraphQL...");
+    // Step 2: Get playback access token using Twitch GraphQL (official playback flow)
+    console.log("get-vod-stream: requesting playback access token via GraphQL...");
     const graphqlQuery = {
       operationName: "PlaybackAccessToken",
       variables: {
@@ -79,155 +80,134 @@ serve(async (req) => {
       extensions: {
         persistedQuery: {
           version: 1,
+          // This is the public persistedQuery hash used by Twitch web client
           sha256Hash: "0828119ded1c13477966434e15800ff57ddacf13ba1911c129dc2200705b0712",
         },
       },
     };
 
-    const graphqlResponse = await fetch("https://gql.twitch.tv/gql", {
+    const gqlRes = await fetch("https://gql.twitch.tv/gql", {
       method: "POST",
       headers: {
-        // Twitch GraphQL playback API requires the public web client ID, not your app's client id
-        "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko",
+        "Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko", // public web client id expected by Twitch
         Authorization: `Bearer ${access_token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(graphqlQuery),
     });
 
-    if (!graphqlResponse.ok) {
-      const graphqlError = await graphqlResponse.text();
-      console.error("get-vod-stream: GraphQL request failed:", graphqlError);
-      return new Response(JSON.stringify({ error: "Failed to get playback access token from Twitch" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!gqlRes.ok) {
+      const txt = await gqlRes.text().catch(() => "");
+      console.error("get-vod-stream: GraphQL playback token failed:", gqlRes.status, txt);
+      return jsonResponse({ error: "Failed to get playback access token from Twitch" }, 500);
     }
 
-    const graphqlData = await graphqlResponse.json();
-    const tokenData = graphqlData?.data?.videoPlaybackAccessToken;
-
+    const gqlJson = await gqlRes.json().catch(() => null);
+    const tokenData = gqlJson?.data?.videoPlaybackAccessToken;
     if (!tokenData || !tokenData.value || !tokenData.signature) {
-      console.error("get-vod-stream: invalid GraphQL response:", graphqlData);
-      return new Response(JSON.stringify({ error: "Invalid playback access token response" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      console.error("get-vod-stream: invalid GraphQL data:", gqlJson);
+      return jsonResponse({ error: "Invalid playback access token response" }, 500);
     }
+
     console.log("get-vod-stream: playback access token obtained");
 
-    // Step 3: Get the signed m3u8 playlist URL from Twitch Usher
+    // Step 3: Fetch the master playlist from Usher with signed token/sig
     const token = encodeURIComponent(tokenData.value);
     const sig = tokenData.signature;
-
     const usherUrl = `https://usher.ttvnw.net/vod/${vodId}.m3u8?nauth=${token}&nauthsig=${sig}&allow_source=true&player=twitchweb`;
-    console.log("get-vod-stream: fetching playlist from Usher...");
 
-    const playlistResponse = await fetch(usherUrl, {
+    console.log("get-vod-stream: fetching master playlist from Usher...");
+    const playlistRes = await fetch(usherUrl, {
       headers: {
         "Client-ID": clientId,
       },
     });
 
-    if (!playlistResponse.ok) {
-      const playlistError = await playlistResponse.text();
-      console.error("get-vod-stream: playlist fetch failed:", playlistError);
-      return new Response(JSON.stringify({ error: "Failed to get VOD playlist from Twitch" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!playlistRes.ok) {
+      const txt = await playlistRes.text().catch(() => "");
+      console.error("get-vod-stream: Usher playlist fetch failed:", playlistRes.status, txt);
+      return jsonResponse({ error: "Failed to get VOD playlist from Twitch" }, 500);
     }
 
-    // Parse the master playlist to get the chunked (source quality) stream URL
-    const playlistText = await playlistResponse.text();
-    console.log("get-vod-stream: received master playlist");
-
-    // Extract the chunked (source quality) stream URL from the master playlist
-    const lines = playlistText.split("\n");
+    const playlistText = await playlistRes.text();
+    const lines = playlistText.split("\n").map((l) => l.trim());
+    // find chunked (source) or the first http stream
     let chunkedUrl = "";
-
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-
-      // Look for the chunked (source quality) stream
+      const line = lines[i];
+      if (!line) continue;
       if (line.includes("chunked") || line.includes('VIDEO="chunked"')) {
-        // The URL is on the next non-comment line
+        // url is likely on next non-comment line
         for (let j = i + 1; j < lines.length; j++) {
-          const urlLine = lines[j].trim();
+          const urlLine = lines[j];
           if (urlLine && !urlLine.startsWith("#")) {
             chunkedUrl = urlLine;
             break;
           }
         }
-        break;
+        if (chunkedUrl) break;
       }
     }
-
-    // If we didn't find chunked, use the first stream URL
     if (!chunkedUrl) {
-      console.log("get-vod-stream: chunked stream not found, using first stream");
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith("#") && trimmed.startsWith("http")) {
-          chunkedUrl = trimmed;
+      // fallback: first http line
+      for (const l of lines) {
+        if (l && !l.startsWith("#") && l.startsWith("http")) {
+          chunkedUrl = l;
           break;
         }
       }
     }
 
     if (!chunkedUrl) {
-      console.error("get-vod-stream: no stream URL found in playlist");
-      return new Response(JSON.stringify({ error: "No stream URL found in VOD playlist" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      console.error("get-vod-stream: playlist parsing found no stream URLs");
+      return jsonResponse({ error: "No stream URL found in VOD playlist" }, 500);
     }
 
-    console.log("get-vod-stream: extracted stream URL:", chunkedUrl);
+    console.log("get-vod-stream: extracted chunked URL:", chunkedUrl);
 
-    // Rewrite the m3u8 URL to point to our rewrite proxy that converts relative paths to absolute
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const encodedUrl = encodeURIComponent(chunkedUrl);
-    const rewrittenUrl = `${supabaseUrl}/functions/v1/rewrite-m3u8?url=${encodedUrl}`;
-    console.log("get-vod-stream: rewritten URL for Railway:", rewrittenUrl);
+    // Step 4: Build rewritten URL that calls our rewrite m3u8 function to convert relative segments -> absolute
+    // Use SUPABASE_URL (must be set in environment)
+    const encoded = encodeURIComponent(chunkedUrl);
+    // Construct rewrite endpoint: ensure no trailing slash problems
+    const baseSupabase = supabaseUrl.replace(/\/$/, "");
+    const rewrittenUrl = `${baseSupabase}/functions/v1/rewrite-m3u8?url=${encoded}`;
 
-    // Step 4: Fetch VOD metadata using the OAuth token we already have
-    console.log("get-vod-stream: fetching VOD metadata...");
-    const vodResponse = await fetch(`https://api.twitch.tv/helix/videos?id=${vodId}`, {
-      headers: {
-        "Client-ID": clientId,
-        Authorization: `Bearer ${access_token}`,
-      },
-    });
+    console.log("get-vod-stream: rewritten URL ready:", rewrittenUrl);
 
+    // Step 5: (optional) fetch video metadata via Helix (title/duration) using the oauth token
     let vodTitle = "Unknown";
     let vodDuration = "Unknown";
-
-    if (vodResponse.ok) {
-      const vodData = await vodResponse.json();
-      if (vodData.data && vodData.data.length > 0) {
-        const vod = vodData.data[0];
-        vodTitle = vod.title;
-        vodDuration = vod.duration;
-        console.log("get-vod-stream: metadata fetched successfully");
+    try {
+      const metaRes = await fetch(`https://api.twitch.tv/helix/videos?id=${vodId}`, {
+        headers: {
+          "Client-ID": clientId,
+          Authorization: `Bearer ${access_token}`,
+        },
+      });
+      if (metaRes.ok) {
+        const metaJson = await metaRes.json().catch(() => null);
+        if (metaJson?.data?.length) {
+          vodTitle = metaJson.data[0].title ?? vodTitle;
+          vodDuration = metaJson.data[0].duration ?? vodDuration;
+        }
+      } else {
+        console.warn("get-vod-stream: helix metadata fetch returned", metaRes.status);
       }
-    } else {
-      console.log("get-vod-stream: metadata fetch failed, continuing without it");
+    } catch (metaErr) {
+      console.warn("get-vod-stream: metadata fetch error (nonfatal):", metaErr);
     }
 
-    return new Response(
-      JSON.stringify({
+    return jsonResponse(
+      {
         streamUrl: rewrittenUrl,
         vodTitle,
         vodDuration,
-      }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      },
+      200,
     );
-  } catch (error) {
-    console.error("get-vod-stream: unexpected error:", error);
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  } catch (err) {
+    console.error("get-vod-stream: unexpected error:", err);
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return jsonResponse({ error: message }, 500);
   }
 });
