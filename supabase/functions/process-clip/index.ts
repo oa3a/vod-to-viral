@@ -20,7 +20,6 @@ function normalizeTime(value: unknown, label: string): string {
   }
 
   if (typeof value === "string") {
-    // If it's already in some H:M:S format, trust it.
     if (value.includes(":")) {
       return value;
     }
@@ -44,6 +43,7 @@ serve(async (req) => {
     const body = await req.json().catch(() => null);
 
     if (!body || typeof body !== "object") {
+      console.error("process-clip: invalid JSON body");
       return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -57,13 +57,15 @@ serve(async (req) => {
     };
 
     if (!vodUrl || typeof vodUrl !== "string") {
-      return new Response(JSON.stringify({ error: "vodUrl is required" }), {
+      console.error("process-clip: missing or invalid vodUrl");
+      return new Response(JSON.stringify({ error: "vodUrl is required and must be a string" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     if (startTime == null || endTime == null) {
+      console.error("process-clip: missing startTime or endTime");
       return new Response(JSON.stringify({ error: "startTime and endTime are required" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -71,7 +73,8 @@ serve(async (req) => {
     }
 
     if (!vodUrl.startsWith("http://") && !vodUrl.startsWith("https://")) {
-      return new Response(JSON.stringify({ error: "vodUrl must be an absolute URL" }), {
+      console.error("process-clip: vodUrl is not absolute:", vodUrl);
+      return new Response(JSON.stringify({ error: "vodUrl must be an absolute URL starting with http:// or https://" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -79,31 +82,47 @@ serve(async (req) => {
 
     console.log("process-clip: received request", { vodUrl, startTime, endTime });
 
-    // Normalize times to HH:MM:SS for Railway
+    // Normalize times to HH:MM:SS
     const normalizedStart = normalizeTime(startTime, "startTime");
     const normalizedEnd = normalizeTime(endTime, "endTime");
 
-    let base = Deno.env.get("FFMPEG_SERVICE_URL")?.trim() || 
-      "https://ffmpeg-clip-service-production.up.railway.app";
+    console.log("process-clip: normalized times", { normalizedStart, normalizedEnd });
 
-    // Auto-add https:// if missing
-    if (!base.startsWith("http://") && !base.startsWith("https://")) {
-      base = "https://" + base;
+    // Get FFmpeg service URL
+    let ffmpegServiceUrl = Deno.env.get("FFMPEG_SERVICE_URL")?.trim();
+
+    if (!ffmpegServiceUrl) {
+      console.error("process-clip: FFMPEG_SERVICE_URL not configured");
+      return new Response(JSON.stringify({ error: "FFMPEG_SERVICE_URL environment variable not set" }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    // Remove trailing slash (if exists)
-    base = base.replace(/\/$/, "");
+    console.log("process-clip: FFMPEG_SERVICE_URL from env:", ffmpegServiceUrl);
 
-    // Ensure it ends with /clip
-    const backendUrl = base.endsWith("/clip") ? base : base + "/clip";
+    // Normalize service URL
+    if (!ffmpegServiceUrl.startsWith("http://") && !ffmpegServiceUrl.startsWith("https://")) {
+      ffmpegServiceUrl = "https://" + ffmpegServiceUrl;
+      console.log("process-clip: added https:// prefix:", ffmpegServiceUrl);
+    }
 
-    console.log("process-clip: forwarding to Railway", {
-      backendUrl,
-      normalizedStart,
-      normalizedEnd,
+    ffmpegServiceUrl = ffmpegServiceUrl.replace(/\/$/, "");
+
+    if (!ffmpegServiceUrl.endsWith("/clip")) {
+      ffmpegServiceUrl = ffmpegServiceUrl + "/clip";
+    }
+
+    console.log("process-clip: final FFmpeg service URL:", ffmpegServiceUrl);
+
+    // Forward request to Railway FFmpeg service
+    console.log("process-clip: forwarding to Railway with payload:", {
+      vodUrl,
+      startTime: normalizedStart,
+      endTime: normalizedEnd,
     });
 
-    const backendRes = await fetch(backendUrl, {
+    const backendRes = await fetch(ffmpegServiceUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -112,6 +131,8 @@ serve(async (req) => {
         endTime: normalizedEnd,
       }),
     });
+
+    console.log("process-clip: Railway response status:", backendRes.status);
 
     if (!backendRes.ok) {
       const text = await backendRes.text().catch(() => "");
@@ -130,7 +151,7 @@ serve(async (req) => {
         {
           status: 502,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-        },
+        }
       );
     }
 
@@ -145,11 +166,11 @@ serve(async (req) => {
         {
           status: 502,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
-        },
+        }
       );
     }
 
-    console.log("process-clip: returning MP4 to client, bytes:", mp4Buffer.byteLength);
+    console.log("process-clip: received MP4 from Railway, bytes:", mp4Buffer.byteLength);
 
     return new Response(mp4Buffer, {
       status: 200,
@@ -157,6 +178,7 @@ serve(async (req) => {
         ...corsHeaders,
         "Content-Type": "video/mp4",
         "Content-Disposition": 'attachment; filename="clip.mp4"',
+        "Content-Length": mp4Buffer.byteLength.toString(),
       },
     });
   } catch (err) {
