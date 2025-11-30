@@ -12,71 +12,58 @@ serve(async (req) => {
   }
 
   try {
-    const url = new URL(req.url);
-    const m3u8Url = url.searchParams.get("url");
+    const urlObj = new URL(req.url);
+    const playlistUrl = urlObj.searchParams.get("url");
 
-    if (!m3u8Url) {
-      return new Response("Missing url parameter", {
-        status: 400,
-        headers: corsHeaders,
-      });
+    if (!playlistUrl) {
+      return new Response("Missing url", { status: 400, headers: corsHeaders });
     }
 
-    console.log("rewrite-m3u8: fetching m3u8 from:", m3u8Url);
+    console.log("Rewriting playlist:", playlistUrl);
 
-    // Fetch the original m3u8 playlist
-    const response = await fetch(m3u8Url);
-    
-    if (!response.ok) {
-      console.error("rewrite-m3u8: failed to fetch m3u8:", response.status);
-      return new Response(`Failed to fetch m3u8: ${response.status}`, {
+    // Fetch m3u8 playlist
+    const upstream = await fetch(playlistUrl);
+    if (!upstream.ok) {
+      return new Response(`Failed to fetch upstream: ${upstream.status}`, {
         status: 502,
         headers: corsHeaders,
       });
     }
 
-    const content = await response.text();
-    console.log("rewrite-m3u8: fetched m3u8 content, length:", content.length);
+    const text = await upstream.text();
 
-    // Parse the base URL from the m3u8 URL (everything before the filename)
-    const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
-    console.log("rewrite-m3u8: base URL:", baseUrl);
+    // Base URL for relative resolution
+    const base = playlistUrl.substring(0, playlistUrl.lastIndexOf("/") + 1);
 
-    // Rewrite relative URLs to absolute URLs
-    const lines = content.split("\n");
-    const rewrittenLines = lines.map((line) => {
-      const trimmed = line.trim();
-      
-      // If it's not a comment and doesn't start with http, it's a relative segment URL
-      if (trimmed && !trimmed.startsWith("#") && !trimmed.startsWith("http")) {
-        const absoluteUrl = baseUrl + trimmed;
-        console.log("rewrite-m3u8: rewriting", trimmed, "->", absoluteUrl);
-        return absoluteUrl;
-      }
-      
-      return line;
-    });
+    const rewritten = text
+      .split("\n")
+      .map((line) => {
+        const trimmed = line.trim();
 
-    const rewrittenContent = rewrittenLines.join("\n");
-    console.log("rewrite-m3u8: rewritten m3u8, length:", rewrittenContent.length);
+        // Ignore comments
+        if (trimmed.startsWith("#")) return line;
 
-    // Return the rewritten m3u8 as text/plain (or application/vnd.apple.mpegurl)
-    return new Response(rewrittenContent, {
+        // Convert relative to absolute segment URL
+        if (trimmed && !trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+          return base + trimmed;
+        }
+
+        return line;
+      })
+      .join("\n");
+
+    return new Response(rewritten, {
       status: 200,
       headers: {
         ...corsHeaders,
         "Content-Type": "application/vnd.apple.mpegurl",
-        "Cache-Control": "no-cache",
       },
     });
-  } catch (error) {
-    console.error("rewrite-m3u8: error:", error);
-    return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+  } catch (err) {
+    console.error("rewrite-m3u8 ERROR:", err);
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
