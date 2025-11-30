@@ -30,17 +30,15 @@ const Results: React.FC = () => {
     return null;
   }
 
-  // Call edge function using raw fetch (Supabase SDK cannot return binary properly)
+  // Call process-clip edge function using Supabase SDK
   const callProcessClip = async (vodUrl: string, startTime: number, endTime: number): Promise<ArrayBuffer> => {
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-
-    if (!supabaseUrl) {
-      throw new Error("VITE_SUPABASE_URL not configured");
-    }
-
     // Validate inputs
     if (!vodUrl || !vodUrl.startsWith("http")) {
       throw new Error(`Invalid vodUrl: ${vodUrl}`);
+    }
+
+    if (!vodUrl.endsWith(".m3u8")) {
+      throw new Error(`vodUrl must end with .m3u8, received: ${vodUrl}`);
     }
 
     if (typeof startTime !== "number" || typeof endTime !== "number") {
@@ -51,36 +49,34 @@ const Results: React.FC = () => {
       throw new Error(`Invalid time range: startTime=${startTime}, endTime=${endTime}`);
     }
 
-    const url = `${supabaseUrl}/functions/v1/process-clip`;
+    console.log("Results: calling process-clip with payload:", { vodUrl, startTime, endTime });
 
-    console.log("Results: calling process-clip at:", url);
-    console.log("Results: payload:", { vodUrl, startTime, endTime });
-    console.log("Results: vodUrl validation:", {
-      isAbsolute: vodUrl.startsWith("http"),
-      length: vodUrl.length,
-      preview: vodUrl.substring(0, 100),
+    const { data, error } = await supabase.functions.invoke("process-clip", {
+      body: { vodUrl, startTime, endTime },
     });
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ vodUrl, startTime, endTime }),
-    });
+    console.log("Results: process-clip response received");
 
-    console.log("Results: process-clip response status:", response.status);
-    console.log("Results: response headers:", Object.fromEntries(response.headers.entries()));
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      console.error("Results: process-clip failed:", response.status, text);
-      throw new Error(`Edge function failed (${response.status}): ${text || response.statusText}`);
+    if (error) {
+      console.error("Results: process-clip error:", error);
+      throw new Error(`Edge function failed: ${error.message}`);
     }
 
-    const arrayBuffer = await response.arrayBuffer();
-    console.log("Results: received arrayBuffer, size:", arrayBuffer.byteLength);
+    if (!data) {
+      throw new Error("No data received from process-clip");
+    }
 
+    // Supabase SDK returns binary data as Blob, convert to ArrayBuffer
+    let arrayBuffer: ArrayBuffer;
+    if (data instanceof Blob) {
+      arrayBuffer = await data.arrayBuffer();
+    } else if (data instanceof ArrayBuffer) {
+      arrayBuffer = data;
+    } else {
+      throw new Error(`Unexpected response type: ${typeof data}`);
+    }
+
+    console.log("Results: received MP4 arrayBuffer, size:", arrayBuffer.byteLength);
     return arrayBuffer;
   };
 
@@ -95,11 +91,11 @@ const Results: React.FC = () => {
     toast.loading(`Processing clip ${clip.id}...`, { id: `clip-${clip.id}` });
 
     try {
-      // 1) Ensure we have a working stream URL
+      // 1) Ensure we have a working stream URL (absolute, ends with .m3u8)
       let streamUrl: string | undefined = vodData.streamUrl;
 
-      if (!streamUrl || !streamUrl.startsWith("http")) {
-        console.log("Results: stream URL not cached, calling get-vod-stream...");
+      if (!streamUrl || !streamUrl.startsWith("http") || !streamUrl.endsWith(".m3u8")) {
+        console.log("Results: stream URL not cached or invalid, calling get-vod-stream...");
         const { data: streamData, error } = await supabase.functions.invoke("get-vod-stream", {
           body: { vodId: vodData.vodId },
         });
@@ -110,8 +106,14 @@ const Results: React.FC = () => {
         }
 
         streamUrl = streamData.streamUrl;
+        
+        // Validate the resolved URL
+        if (!streamUrl.startsWith("http") || !streamUrl.endsWith(".m3u8")) {
+          throw new Error(`Invalid stream URL format: ${streamUrl}`);
+        }
+        
         vodData.streamUrl = streamUrl; // cache it
-        console.log("Results: got stream URL:", streamUrl);
+        console.log("Results: resolved and validated stream URL:", streamUrl);
       }
 
       // 2) Call process-clip to get MP4
