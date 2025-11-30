@@ -21,7 +21,7 @@ serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => null);
-    const vodUrl = body?.vodUrl;
+    const vodUrl = (body as any)?.vodUrl as string | undefined;
 
     if (!vodUrl || typeof vodUrl !== "string") {
       console.error("fetch-twitch-vod: missing or invalid vodUrl");
@@ -34,7 +34,10 @@ serve(async (req) => {
     const vodIdMatch = vodUrl.match(/videos\/(\d+)/);
     if (!vodIdMatch) {
       console.error("fetch-twitch-vod: invalid URL format:", vodUrl);
-      return jsonResponse({ error: "Invalid Twitch VOD URL format. Expected: https://www.twitch.tv/videos/123456789" }, 400);
+      return jsonResponse(
+        { error: "Invalid Twitch VOD URL format. Expected: https://www.twitch.tv/videos/123456789" },
+        400,
+      );
     }
 
     const vodId = vodIdMatch[1];
@@ -66,11 +69,11 @@ serve(async (req) => {
       return jsonResponse({ error: "Failed to authenticate with Twitch" }, 500);
     }
 
-    const tokenData = await tokenRes.json().catch(() => null);
-    const access_token = tokenData?.access_token;
+    const tokenData = await tokenRes.json().catch(() => null as any);
+    const access_token = tokenData?.access_token as string | undefined;
 
     if (!access_token) {
-      console.error("fetch-twitch-vod: OAuth response missing access_token");
+      console.error("fetch-twitch-vod: OAuth response missing access_token", tokenData);
       return jsonResponse({ error: "Invalid OAuth response from Twitch" }, 500);
     }
 
@@ -91,7 +94,7 @@ serve(async (req) => {
       return jsonResponse({ error: "Failed to fetch VOD from Twitch" }, 500);
     }
 
-    const vodData = await vodRes.json().catch(() => null);
+    const vodData = await vodRes.json().catch(() => null as any);
 
     if (!vodData?.data || vodData.data.length === 0) {
       console.error("fetch-twitch-vod: VOD not found:", vodId);
@@ -112,20 +115,20 @@ serve(async (req) => {
       const minutes = duration.match(/(\d+)m/);
       const seconds = duration.match(/(\d+)s/);
 
-      if (hours) totalSeconds += parseInt(hours[1]) * 3600;
-      if (minutes) totalSeconds += parseInt(minutes[1]) * 60;
-      if (seconds) totalSeconds += parseInt(seconds[1]);
+      if (hours) totalSeconds += parseInt(hours[1], 10) * 3600;
+      if (minutes) totalSeconds += parseInt(minutes[1], 10) * 60;
+      if (seconds) totalSeconds += parseInt(seconds[1], 10);
 
       return totalSeconds;
     };
 
-    const durationInSeconds = parseDuration(vod.duration);
+    const durationInSeconds = parseDuration(vod.duration as string);
     console.log("fetch-twitch-vod: duration in seconds:", durationInSeconds);
 
     // Generate mock viral clips based on VOD timeline
     const generateMockClips = (totalDuration: number) => {
       const clipCount = Math.min(7, Math.max(3, Math.floor(totalDuration / 600)));
-      const clips = [];
+      const clips = [] as any[];
 
       for (let i = 0; i < clipCount; i++) {
         const startTime = Math.floor((totalDuration / (clipCount + 1)) * (i + 1));
@@ -145,15 +148,16 @@ serve(async (req) => {
           duration: endTime - startTime,
           formattedTime: `${formatTime(startTime)} - ${formatTime(endTime)}`,
           viralScore: 95 - i * 3,
-          title: [
-            "Epic Moment",
-            "Insane Play",
-            "Perfect Timing",
-            "Chat Goes Wild",
-            "Unexpected Victory",
-            "Hilarious Reaction",
-            "Clutch Performance",
-          ][i] || `Clip ${i + 1}`,
+          title:
+            [
+              "Epic Moment",
+              "Insane Play",
+              "Perfect Timing",
+              "Chat Goes Wild",
+              "Unexpected Victory",
+              "Hilarious Reaction",
+              "Clutch Performance",
+            ][i] || `Clip ${i + 1}`,
         });
       }
 

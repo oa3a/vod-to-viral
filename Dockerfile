@@ -1,28 +1,24 @@
-# Use Node.js 18 LTS
+# Use Node.js LTS base image
 FROM node:18-slim
 
-# Install FFmpeg and yt-dlp
+# Install system FFmpeg and yt-dlp (no ffmpeg-static)
 RUN apt-get update && \
-    apt-get install -y ffmpeg python3 python3-pip curl && \
-    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
-    chmod a+rx /usr/local/bin/yt-dlp && \
+    apt-get install -y --no-install-recommends ffmpeg python3 python3-pip ca-certificates && \
+    pip3 install --no-cache-dir yt-dlp && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy server package manifest and install production dependencies only
 COPY railway-package.json package.json
+RUN npm install --omit=dev
+
+# Copy server entrypoint
 COPY railway-server.js server.js
 
-# Install dependencies
-RUN npm install --production
-
-# Create temp directory
-RUN mkdir -p /app/temp
-
-# Set environment
+# Environment
 ENV NODE_ENV=production
 ENV PORT=3000
 
