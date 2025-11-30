@@ -25,13 +25,13 @@ function normalizeTime(value: unknown, label: string): string {
     }
 
     const asNumber = Number(value);
-    if (!Number.isNaN(asNumber)) {
+    if (!Number.isNaN(asNumber) && Number.isFinite(asNumber)) {
       return normalizeTime(asNumber, label);
     }
   }
 
-  console.warn(`process-clip: received unexpected ${label} value:`, value);
-  throw new Error(`Invalid ${label} value`);
+  console.error(`process-clip: invalid ${label} value:`, value);
+  throw new Error(`Invalid ${label} value: ${JSON.stringify(value)}`);
 }
 
 serve(async (req) => {
@@ -56,6 +56,8 @@ serve(async (req) => {
       endTime?: unknown;
     };
 
+    console.log("process-clip: received request", { vodUrl, startTime, endTime });
+
     if (!vodUrl || typeof vodUrl !== "string") {
       console.error("process-clip: missing or invalid vodUrl");
       return new Response(JSON.stringify({ error: "vodUrl is required and must be a string" }), {
@@ -72,19 +74,40 @@ serve(async (req) => {
       });
     }
 
+    // Validate vodUrl is absolute
     if (!vodUrl.startsWith("http://") && !vodUrl.startsWith("https://")) {
       console.error("process-clip: vodUrl is not absolute:", vodUrl);
-      return new Response(JSON.stringify({ error: "vodUrl must be an absolute URL starting with http:// or https://" }), {
+      return new Response(
+        JSON.stringify({ 
+          error: "vodUrl must be an absolute URL starting with http:// or https://",
+          received: vodUrl 
+        }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    console.log("process-clip: received request", { vodUrl, startTime, endTime });
+    console.log("process-clip: validated absolute vodUrl:", vodUrl);
 
     // Normalize times to HH:MM:SS
-    const normalizedStart = normalizeTime(startTime, "startTime");
-    const normalizedEnd = normalizeTime(endTime, "endTime");
+    let normalizedStart: string;
+    let normalizedEnd: string;
+
+    try {
+      normalizedStart = normalizeTime(startTime, "startTime");
+      normalizedEnd = normalizeTime(endTime, "endTime");
+    } catch (timeError) {
+      console.error("process-clip: time normalization failed:", timeError);
+      return new Response(
+        JSON.stringify({ 
+          error: timeError instanceof Error ? timeError.message : "Invalid time format",
+          startTime,
+          endTime
+        }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     console.log("process-clip: normalized times", { normalizedStart, normalizedEnd });
 
@@ -115,21 +138,20 @@ serve(async (req) => {
 
     console.log("process-clip: final FFmpeg service URL:", ffmpegServiceUrl);
 
-    // Forward request to Railway FFmpeg service
-    console.log("process-clip: forwarding to Railway with payload:", {
+    // Prepare payload for Railway
+    const payload = {
       vodUrl,
       startTime: normalizedStart,
       endTime: normalizedEnd,
-    });
+    };
 
+    console.log("process-clip: forwarding to Railway with payload:", JSON.stringify(payload));
+
+    // Forward request to Railway FFmpeg service
     const backendRes = await fetch(ffmpegServiceUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        vodUrl,
-        startTime: normalizedStart,
-        endTime: normalizedEnd,
-      }),
+      body: JSON.stringify(payload),
     });
 
     console.log("process-clip: Railway response status:", backendRes.status);

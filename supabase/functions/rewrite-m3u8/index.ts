@@ -16,11 +16,18 @@ serve(async (req) => {
     const urlObj = new URL(req.url);
     const m3u8Param = urlObj.searchParams.get("url");
     if (!m3u8Param) {
+      console.error("rewrite-m3u8: missing url parameter");
       return new Response("Missing url parameter", { status: 400, headers: corsHeaders });
     }
     const m3u8Url = decodeURIComponent(m3u8Param);
 
     console.log("rewrite-m3u8: fetching m3u8:", m3u8Url);
+
+    // Validate absolute URL
+    if (!m3u8Url.startsWith("http://") && !m3u8Url.startsWith("https://")) {
+      console.error("rewrite-m3u8: m3u8 URL is not absolute:", m3u8Url);
+      return new Response("m3u8 URL must be absolute", { status: 400, headers: corsHeaders });
+    }
 
     const res = await fetch(m3u8Url);
     if (!res.ok) {
@@ -30,20 +37,39 @@ serve(async (req) => {
     }
 
     const text = await res.text();
-    // derive base for relative segments
+    console.log("rewrite-m3u8: playlist fetched, length:", text.length);
+
+    // Derive base URL for relative segments
     const base = m3u8Url.substring(0, m3u8Url.lastIndexOf("/") + 1);
+    console.log("rewrite-m3u8: base URL for segments:", base);
 
     const lines = text.split("\n");
+    let rewrittenCount = 0;
+    
     const out = lines
       .map((line) => {
         const t = line.trim();
-        if (!t) return line;
-        if (t.startsWith("#")) return line;
-        if (t.startsWith("http")) return line;
-        // relative segment -> absolute
-        return base + t;
+        
+        // Keep empty lines and comments as-is
+        if (!t || t.startsWith("#")) {
+          return line;
+        }
+        
+        // If already absolute, keep as-is
+        if (t.startsWith("http://") || t.startsWith("https://")) {
+          return line;
+        }
+        
+        // CRITICAL: Convert relative path to absolute
+        const absoluteUrl = base + t;
+        rewrittenCount++;
+        console.log(`rewrite-m3u8: rewriting "${t}" -> "${absoluteUrl}"`);
+        return absoluteUrl;
       })
       .join("\n");
+
+    console.log(`rewrite-m3u8: rewritten ${rewrittenCount} segment URLs to absolute`);
+    console.log("rewrite-m3u8: returning rewritten playlist");
 
     return new Response(out, {
       status: 200,

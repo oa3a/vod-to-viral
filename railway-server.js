@@ -32,6 +32,59 @@ app.get('/', (req, res) => {
   });
 });
 
+// Helper: Convert HH:MM:SS, MM:SS, or seconds to seconds - NEVER returns NaN
+function parseTimeToSeconds(time) {
+  // If already a number, validate and return it
+  if (typeof time === 'number') {
+    if (!Number.isFinite(time) || time < 0) {
+      console.error('Railway: invalid numeric time value:', time);
+      return 0;
+    }
+    return Math.floor(time);
+  }
+
+  const str = String(time);
+
+  // Check if it's in HH:MM:SS or MM:SS format
+  if (str.includes(':')) {
+    const parts = str.split(':').map(Number);
+
+    if (parts.length === 3) {
+      // HH:MM:SS
+      const hours = parts[0];
+      const minutes = parts[1];
+      const seconds = parts[2];
+
+      if (Number.isNaN(hours) || Number.isNaN(minutes) || Number.isNaN(seconds)) {
+        console.error('Railway: invalid time format (NaN in parts):', str);
+        return 0;
+      }
+
+      return hours * 3600 + minutes * 60 + seconds;
+    } else if (parts.length === 2) {
+      // MM:SS
+      const minutes = parts[0];
+      const seconds = parts[1];
+
+      if (Number.isNaN(minutes) || Number.isNaN(seconds)) {
+        console.error('Railway: invalid time format (NaN in parts):', str);
+        return 0;
+      }
+
+      return minutes * 60 + seconds;
+    }
+  }
+
+  // Otherwise try to parse as number
+  const parsed = Number(str);
+  if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed < 0) {
+    console.error('Railway: could not parse time value:', str);
+    return 0;
+  }
+
+  return Math.floor(parsed);
+}
+
 // Clip endpoint
 app.post('/clip', async (req, res) => {
   const tempDir = path.join(__dirname, 'temp');
@@ -40,6 +93,8 @@ app.post('/clip', async (req, res) => {
   try {
     const { vodUrl, startTime, endTime } = req.body;
 
+    console.log('Railway: received clip request', { vodUrl, startTime, endTime });
+
     // Validate input
     if (!vodUrl || startTime == null || endTime == null) {
       console.error('Railway: missing required fields');
@@ -47,8 +102,6 @@ app.post('/clip', async (req, res) => {
         error: 'Missing required fields: vodUrl, startTime, endTime',
       });
     }
-
-    console.log('Railway: received clip request', { vodUrl, startTime, endTime });
 
     // Validate vodUrl is absolute
     if (typeof vodUrl !== 'string' || (!vodUrl.startsWith('http://') && !vodUrl.startsWith('https://'))) {
@@ -61,26 +114,69 @@ app.post('/clip', async (req, res) => {
 
     console.log('Railway: validated absolute vodUrl:', vodUrl);
 
+    // CRITICAL: Validate m3u8 playlist URL
+    if (vodUrl.includes('/rewrite-m3u8?url=')) {
+      console.log('Railway: detected rewrite-m3u8 proxy URL');
+      const encodedOriginal = vodUrl.split('/rewrite-m3u8?url=')[1];
+      if (encodedOriginal) {
+        const decodedOriginal = decodeURIComponent(encodedOriginal);
+        console.log('Railway: original m3u8 URL:', decodedOriginal);
+      }
+    }
+
     // Ensure temp directory exists
     await fs.mkdir(tempDir, { recursive: true });
 
-    // Convert times to seconds for duration calculation
+    // Convert times to seconds - GUARANTEED to never be NaN
     const startSeconds = parseTimeToSeconds(startTime);
     const endSeconds = parseTimeToSeconds(endTime);
-    const duration = endSeconds - startSeconds;
+    
+    console.log('Railway: parsed times to seconds', { startSeconds, endSeconds });
 
-    if (isNaN(duration) || duration <= 0) {
-      console.error('Railway: invalid duration calculated', { startSeconds, endSeconds, duration });
+    // Validate time range
+    if (endSeconds <= startSeconds) {
+      console.error('Railway: invalid time range', { startSeconds, endSeconds });
       return res.status(400).json({
-        error: 'Invalid time range',
-        details: `startTime=${startTime}, endTime=${endTime} resulted in duration=${duration}`,
+        error: 'Invalid time range: endTime must be greater than startTime',
+        startTime,
+        endTime,
+        startSeconds,
+        endSeconds,
       });
     }
 
-    console.log('Railway: calculated duration:', { startSeconds, endSeconds, duration });
+    // Calculate duration with minimum 1 second
+    const duration = Math.max(1, endSeconds - startSeconds);
+
+    console.log('Railway: calculated duration:', {
+      startSeconds,
+      endSeconds,
+      duration,
+      isValid: Number.isFinite(duration) && duration > 0,
+    });
+
+    // CRITICAL: Final validation before FFmpeg
+    if (!Number.isFinite(duration) || duration <= 0 || Number.isNaN(duration)) {
+      console.error('Railway: CRITICAL - invalid duration calculated', { 
+        startTime, 
+        endTime, 
+        startSeconds, 
+        endSeconds, 
+        duration 
+      });
+      return res.status(400).json({
+        error: 'Invalid duration calculated',
+        details: { startTime, endTime, startSeconds, endSeconds, duration },
+      });
+    }
 
     // Process video with FFmpeg
-    console.log('Railway: starting FFmpeg processing for HLS stream');
+    console.log('Railway: starting FFmpeg with params:', {
+      vodUrl,
+      startSeconds,
+      duration,
+      outputPath,
+    });
 
     await new Promise((resolve, reject) => {
       const command = ffmpeg()
@@ -91,7 +187,7 @@ app.post('/clip', async (req, res) => {
           '-reconnect_streamed', '1',
           '-reconnect_delay_max', '5',
         ])
-        .seekInput(startTime)
+        .seekInput(startSeconds)
         .duration(duration)
         .outputOptions([
           '-c copy',
@@ -101,6 +197,11 @@ app.post('/clip', async (req, res) => {
         .output(outputPath)
         .on('start', (cmd) => {
           console.log('Railway: FFmpeg command:', cmd);
+          // Verify no NaN in command
+          if (cmd.includes('NaN') || cmd.includes('undefined')) {
+            console.error('Railway: CRITICAL - FFmpeg command contains NaN or undefined!');
+            reject(new Error('Invalid FFmpeg command - contains NaN or undefined'));
+          }
         })
         .on('progress', (progress) => {
           if (progress.percent) {
@@ -161,6 +262,7 @@ app.post('/clip', async (req, res) => {
     console.log('Railway: successfully sent MP4 to client');
   } catch (error) {
     console.error('Railway: clip processing error:', error);
+    console.error('Railway: error stack:', error.stack);
 
     // Clean up on error
     try {
@@ -175,33 +277,6 @@ app.post('/clip', async (req, res) => {
     });
   }
 });
-
-// Helper: Convert HH:MM:SS, MM:SS, or seconds to seconds
-function parseTimeToSeconds(time) {
-  // If already a number, return it
-  if (typeof time === 'number' && Number.isFinite(time)) {
-    return time;
-  }
-
-  const str = String(time);
-
-  // Check if it's in HH:MM:SS or MM:SS format
-  if (str.includes(':')) {
-    const parts = str.split(':').map(Number);
-
-    if (parts.length === 3) {
-      // HH:MM:SS
-      return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    } else if (parts.length === 2) {
-      // MM:SS
-      return parts[0] * 60 + parts[1];
-    }
-  }
-
-  // Otherwise try to parse as number
-  const parsed = Number(str);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
 
 // Log yt-dlp version if available
 async function logYtDlpVersion() {

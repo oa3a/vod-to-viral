@@ -38,10 +38,28 @@ const Results: React.FC = () => {
       throw new Error("VITE_SUPABASE_URL not configured");
     }
 
+    // Validate inputs
+    if (!vodUrl || !vodUrl.startsWith("http")) {
+      throw new Error(`Invalid vodUrl: ${vodUrl}`);
+    }
+
+    if (typeof startTime !== "number" || typeof endTime !== "number") {
+      throw new Error(`Invalid times: startTime=${startTime}, endTime=${endTime}`);
+    }
+
+    if (endTime <= startTime) {
+      throw new Error(`Invalid time range: startTime=${startTime}, endTime=${endTime}`);
+    }
+
     const url = `${supabaseUrl}/functions/v1/process-clip`;
 
     console.log("Results: calling process-clip at:", url);
     console.log("Results: payload:", { vodUrl, startTime, endTime });
+    console.log("Results: vodUrl validation:", {
+      isAbsolute: vodUrl.startsWith("http"),
+      length: vodUrl.length,
+      preview: vodUrl.substring(0, 100),
+    });
 
     const response = await fetch(url, {
       method: "POST",
@@ -52,6 +70,7 @@ const Results: React.FC = () => {
     });
 
     console.log("Results: process-clip response status:", response.status);
+    console.log("Results: response headers:", Object.fromEntries(response.headers.entries()));
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
