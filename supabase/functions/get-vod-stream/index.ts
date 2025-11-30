@@ -24,6 +24,7 @@ serve(async (req) => {
     const vodId = body?.vodId || null;
 
     if (!vodId || typeof vodId !== "string") {
+      console.error("get-vod-stream: missing or invalid vodId");
       return jsonResponse({ error: "VOD ID is required" }, 400);
     }
 
@@ -65,6 +66,8 @@ serve(async (req) => {
       console.error("get-vod-stream: oauth response missing access_token", oauthJson);
       return jsonResponse({ error: "Invalid OAuth response" }, 500);
     }
+
+    console.log("get-vod-stream: OAuth token obtained");
 
     // Step 2: Get playback access token using Twitch GraphQL (official playback flow)
     console.log("get-vod-stream: requesting playback access token via GraphQL...");
@@ -130,6 +133,8 @@ serve(async (req) => {
     }
 
     const playlistText = await playlistRes.text();
+    console.log("get-vod-stream: master playlist fetched, length:", playlistText.length);
+
     const lines = playlistText.split("\n").map((l) => l.trim());
     // find chunked (source) or the first http stream
     let chunkedUrl = "";
@@ -165,10 +170,14 @@ serve(async (req) => {
 
     console.log("get-vod-stream: extracted chunked URL:", chunkedUrl);
 
+    // CRITICAL: Validate that chunkedUrl is absolute
+    if (!chunkedUrl.startsWith("http://") && !chunkedUrl.startsWith("https://")) {
+      console.error("get-vod-stream: chunked URL is not absolute:", chunkedUrl);
+      return jsonResponse({ error: "Extracted stream URL is not absolute" }, 500);
+    }
+
     // Step 4: Build rewritten URL that calls our rewrite m3u8 function to convert relative segments -> absolute
-    // Use SUPABASE_URL (must be set in environment)
     const encoded = encodeURIComponent(chunkedUrl);
-    // Construct rewrite endpoint: ensure no trailing slash problems
     const baseSupabase = supabaseUrl.replace(/\/$/, "");
     const rewrittenUrl = `${baseSupabase}/functions/v1/rewrite-m3u8?url=${encoded}`;
 
@@ -197,13 +206,14 @@ serve(async (req) => {
       console.warn("get-vod-stream: metadata fetch error (nonfatal):", metaErr);
     }
 
+    console.log("get-vod-stream: SUCCESS - returning stream URL");
     return jsonResponse(
       {
         streamUrl: rewrittenUrl,
         vodTitle,
         vodDuration,
       },
-      200,
+      200
     );
   } catch (err) {
     console.error("get-vod-stream: unexpected error:", err);
